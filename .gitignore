@@ -1,0 +1,34 @@
+# Build outputs
+output/
+build/
+
+# VS generated
+*.suo
+*.user
+*.ncb
+*.aps
+*.pch
+*.vspscc
+*.vssscc
+.vs/
+x64/
+Debug/
+Release/
+
+# Compiled
+*.obj
+*.pdb
+*.ilk
+*.idb
+*.exp
+*.lib
+*.log
+*.tlog
+*.lastbuildstate
+*.pch
+*.ipch
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
