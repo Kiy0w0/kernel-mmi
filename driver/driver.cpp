@@ -658,124 +658,6 @@ NTSTATUS ResolveImports(
 }
 
 //=============================================================================
-// Import Resolution
-//=============================================================================
-
-NTSTATUS ResolveImports(
-    _In_ PEPROCESS           Process,
-    _In_ PVOID               AllocBase,
-    _In_ PIMAGE_NT_HEADERS64 Nt)
-{
-    ULONG importRva  = Nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
-    ULONG importSize = Nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size;
-
-    if (importRva == 0 || importSize == 0) {
-        DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
-            "[drv] No imports to resolve\n");
-        return STATUS_SUCCESS;
-    }
-
-    // Read the import directory from target
-    ULONG bufSize = importSize + 4096;  // Extra for safety
-    PVOID importBuf = ExAllocatePool2(POOL_FLAG_NON_PAGED, bufSize, DRV_POOL_TAG);
-    if (!importBuf) return STATUS_INSUFFICIENT_RESOURCES;
-
-    NTSTATUS status = ReadFromProcess(
-        Process,
-        (PVOID)((ULONG_PTR)AllocBase + importRva),
-        importBuf,
-        importSize
-    );
-
-    if (!NT_SUCCESS(status)) {
-        ExFreePoolWithTag(importBuf, DRV_POOL_TAG);
-        return status;
-    }
-
-    PIMAGE_IMPORT_DESCRIPTOR importDesc = (PIMAGE_IMPORT_DESCRIPTOR)importBuf;
-
-    KAPC_STATE apcState;
-    KeStackAttachProcess(Process, &apcState);
-
-    __try {
-        while (importDesc->Name) {
-            // Read module name from target process memory
-            char* modName = (char*)((ULONG_PTR)AllocBase + importDesc->Name);
-
-            // Convert to wide string for FindModuleBase
-            WCHAR wModName[256] = { 0 };
-            for (int j = 0; j < 255 && modName[j]; j++) {
-                wModName[j] = (WCHAR)modName[j];
-            }
-
-            // Temporarily detach to call FindModuleBase (it does its own attach)
-            KeUnstackDetachProcess(&apcState);
-
-            PVOID modBase = FindModuleBase(Process, wModName);
-            if (!modBase) {
-                DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
-                    "[drv] Module not found: %ls\n", wModName);
-                
-                // Re-attach and continue
-                KeStackAttachProcess(Process, &apcState);
-                importDesc++;
-                continue;
-            }
-
-            // Re-attach
-            KeStackAttachProcess(Process, &apcState);
-
-            // Walk the thunk array
-            ULONG_PTR thunkRva = importDesc->OriginalFirstThunk ?
-                importDesc->OriginalFirstThunk : importDesc->FirstThunk;
-
-            PIMAGE_THUNK_DATA64 origThunk = (PIMAGE_THUNK_DATA64)((ULONG_PTR)AllocBase + thunkRva);
-            PIMAGE_THUNK_DATA64 firstThunk = (PIMAGE_THUNK_DATA64)((ULONG_PTR)AllocBase + importDesc->FirstThunk);
-
-            while (origThunk->u1.AddressOfData) {
-                PVOID funcAddr = NULL;
-
-                if (IMAGE_SNAP_BY_ORDINAL64(origThunk->u1.Ordinal)) {
-                    // Import by ordinal — not commonly used, skip for safety
-                    origThunk++;
-                    firstThunk++;
-                    continue;
-                }
-                else {
-                    // Import by name
-                    PIMAGE_IMPORT_BY_NAME hint =
-                        (PIMAGE_IMPORT_BY_NAME)((ULONG_PTR)AllocBase + origThunk->u1.AddressOfData);
-
-                    funcAddr = FindExport(modBase, (PCCH)hint->Name);
-                }
-
-                if (funcAddr) {
-                    firstThunk->u1.Function = (ULONG_PTR)funcAddr;
-                }
-
-                origThunk++;
-                firstThunk++;
-            }
-
-            importDesc++;
-        }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        KeUnstackDetachProcess(&apcState);
-        ExFreePoolWithTag(importBuf, DRV_POOL_TAG);
-        return STATUS_ACCESS_VIOLATION;
-    }
-
-    KeUnstackDetachProcess(&apcState);
-    ExFreePoolWithTag(importBuf, DRV_POOL_TAG);
-
-    DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
-        "[drv] Imports resolved\n");
-
-    return STATUS_SUCCESS;
-}
-
-//=============================================================================
 // Set Section Memory Protections
 //=============================================================================
 
@@ -1224,12 +1106,82 @@ NTSTATUS PerformManualMap(
 
     if (!(Flags & INJ_FLAG_SKIP_EXCEPTIONS)) {
         UpdateProgress(80, "Registering exception handlers...");
+
         ULONG pdataRva  = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].VirtualAddress;
         ULONG pdataSize = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].Size;
+
         if (pdataRva && pdataSize) {
-            PRUNTIME_FUNCTION pdata = (PRUNTIME_FUNCTION)((ULONG_PTR)allocBase + pdataRva);
-            ULONG count = pdataSize / sizeof(RUNTIME_FUNCTION);
-            RtlAddFunctionTable(pdata, count, (ULONG64)allocBase);
+            // RtlAddFunctionTable must run in the context of the target user process.
+            // Calling it from kernel space registers the table for the kernel — useless.
+            // We inject a small shellcode that calls RtlAddFunctionTable inside the target.
+            //
+            // x64 shellcode layout:
+            //   sub rsp, 28h
+            //   mov rcx, <pdata_va>      ; PRUNTIME_FUNCTION
+            //   mov edx, <entry_count>   ; DWORD EntryCount
+            //   mov r8,  <image_base>    ; DWORD64 BaseAddress
+            //   mov rax, <fn_addr>       ; address of ntdll!RtlAddFunctionTable
+            //   call rax
+            //   add rsp, 28h
+            //   ret
+
+            static const UCHAR kRaftTemplate[] = {
+                0x48, 0x83, 0xEC, 0x28,                               // sub rsp, 28h
+                0x48, 0xB9, 0,0,0,0, 0,0,0,0,                         // mov rcx, <pdata_va>
+                0xBA, 0,0,0,0,                                         // mov edx, <count>
+                0x49, 0xB8, 0,0,0,0, 0,0,0,0,                         // mov r8, <base>
+                0x48, 0xB8, 0,0,0,0, 0,0,0,0,                         // mov rax, <fn>
+                0xFF, 0xD0,                                            // call rax
+                0x48, 0x83, 0xC4, 0x28,                               // add rsp, 28h
+                0xC3                                                   // ret
+            };
+            // patch offsets
+            enum { OFF_PDATA = 6, OFF_COUNT = 16, OFF_BASE = 21, OFF_FN = 31 };
+
+            PVOID ntdllBase = FindModuleBase(process, L"ntdll.dll");
+            PVOID fnRaft    = ntdllBase ? FindExportSafe(ntdllBase, "RtlAddFunctionTable") : NULL;
+
+            if (fnRaft) {
+                ULONG_PTR pdataVa   = (ULONG_PTR)allocBase + pdataRva;
+                ULONG     entryCount = pdataSize / sizeof(RUNTIME_FUNCTION);
+
+                UCHAR sc[sizeof(kRaftTemplate)];
+                RtlCopyMemory(sc, kRaftTemplate, sizeof(sc));
+                *(ULONG_PTR*)(sc + OFF_PDATA) = pdataVa;
+                *(ULONG*)    (sc + OFF_COUNT)  = entryCount;
+                *(ULONG_PTR*)(sc + OFF_BASE)   = (ULONG_PTR)allocBase;
+                *(ULONG_PTR*)(sc + OFF_FN)     = (ULONG_PTR)fnRaft;
+
+                PVOID  scBase = NULL;
+                SIZE_T scSize = sizeof(sc);
+                CLIENT_ID cid = { (HANDLE)(ULONG_PTR)TargetPid, NULL };
+                OBJECT_ATTRIBUTES oa;
+                InitializeObjectAttributes(&oa, NULL, 0, NULL, NULL);
+                HANDLE ph = NULL;
+
+                if (NT_SUCCESS(ZwOpenProcess(&ph, PROCESS_ALL_ACCESS, &oa, &cid))) {
+                    if (NT_SUCCESS(ZwAllocateVirtualMemory(ph, &scBase, 0, &scSize,
+                                        MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE))) {
+                        WriteToProcess(process, scBase, sc, sizeof(sc));
+                        if (pfnRtlCreateUserThread) {
+                            HANDLE thr = NULL;
+                            if (NT_SUCCESS(pfnRtlCreateUserThread(ph, NULL, FALSE, 0, 0, 0,
+                                                                   scBase, NULL, &thr, NULL))) {
+                                LARGE_INTEGER t; t.QuadPart = -30000000LL;
+                                ZwWaitForSingleObject(thr, FALSE, &t);
+                                ZwClose(thr);
+                            }
+                        }
+                        ZwFreeVirtualMemory(ph, &scBase, &scSize, MEM_RELEASE);
+                    }
+                    ZwClose(ph);
+                }
+                DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
+                    "[drv] RtlAddFunctionTable invoked in target (count=%u)\n", entryCount);
+            } else {
+                DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
+                    "[drv] ntdll!RtlAddFunctionTable not found — SEH may not work\n");
+            }
         }
     }
 

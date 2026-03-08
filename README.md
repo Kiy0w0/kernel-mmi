@@ -26,17 +26,17 @@
 
 ## What is Nanahira?
 
-**Nanahira** is a ring-0 kernel manual map DLL injector. Every step of the injection — PE parsing, section mapping, base relocations, import resolution, per-section memory protection, TLS callbacks, exception directory registration, and `DllMain` execution — runs entirely inside the Windows kernel.
+**Nanahira** is a ring-0 kernel manual map DLL injector. Every step of the injection PE parsing, section mapping, base relocations, import resolution, per-section memory protection, TLS callbacks, exception directory registration, and `DllMain` execution runs entirely inside the Windows kernel.
 
-The usermode side (`nanahira.exe`) reads the DLL from disk and drops it into a shared memory section. That's it. No `VirtualAllocEx`, no `WriteProcessMemory`, no `CreateRemoteThread` — the kernel driver does all of it.
+The usermode side (`nanahira.exe`) reads the DLL from disk and drops it into a shared memory section. That's it. No `VirtualAllocEx`, no `WriteProcessMemory`, no `CreateRemoteThread` the kernel driver does all of it.
 
 Three injection modes are available depending on your situation:
 
 | Mode | How it works |
 |:---|:---|
 | `kernel` | Full ring-0 manual map via driver (default) |
-| `hook` | Shellcode injected via `SetWinEventHook` — no `CreateRemoteThread` |
-| `usermode` | Direct inject without driver — `VirtualAllocEx` + self-contained shellcode |
+| `hook` | Shellcode injected via `SetWinEventHook` no `CreateRemoteThread` |
+| `usermode` | Direct inject without driver `VirtualAllocEx` + self-contained shellcode |
 
 ---
 
@@ -66,15 +66,15 @@ The shared memory section (`\BaseNamedObjects\Global\SharedMapSec`) is the only 
 
 | Feature | Details |
 |:---|:---|
-| **Full kernel manual map** | PE ops in ring 0 — no usermode injection APIs |
-| **Import by name + ordinal** | Both forms handled — previously ordinal imports were skipped |
+| **Full kernel manual map** | PE ops in ring 0 no usermode injection APIs |
+| **Import by name + ordinal** | Both forms handled previously ordinal imports were skipped |
 | **Delay-load import support** | `IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT` resolved at inject time |
 | **Forwarded export resolution** | Chains like `ntdll.RtlXxx → ntdllp.RtlXxx` are followed |
 | **TLS callback execution** | Callbacks run before DllMain, as the loader would |
 | **Exception directory (.pdata)** | `RtlAddFunctionTable` called so C++ exceptions / SEH work inside injected DLL |
-| **Header erase / stomp** | Zero or LFSR-junk overwrite — controlled per-inject via flags |
+| **Header erase / stomp** | Zero or LFSR-junk overwrite controlled per-inject via flags |
 | **WinEventHook injection** | Alternative entry via `SetWinEventHook` + self-contained shellcode |
-| **Usermode fallback** | Works without driver — full PE shellcode runs inside target |
+| **Usermode fallback** | Works without driver full PE shellcode runs inside target |
 | **Compile-time XOR strings** | Sensitive literals encrypted at compile time via template metaprogramming |
 | **Signature randomization** | Source-level identifier mutation + 10 binary PE mutations every build |
 | **Discord Rich Presence** | Status updates while injecting |
@@ -145,7 +145,7 @@ Or build manually in VS2022 `Release | x64`, then run `quick_spoof.bat` for PE m
 **Test signing (recommended):**
 
 ```batch
-:: One-time setup — run as admin, then reboot
+:: One-time setup run as admin, then reboot
 bcdedit /set testsigning on
 bcdedit /set nointegritychecks on
 ```
@@ -216,11 +216,11 @@ Per-injection behavior can be controlled via flags set in `shared/protocol.h`:
 
 ## Signature Randomization
 
-### Layer 1 — Source mutation
+### Layer 1 Source mutation
 
-Before compilation, identifiers in `protocol.h` are randomized — shared memory name, magic value, pool tag. The compiled binary contains completely different strings and constants each time.
+Before compilation, identifiers in `protocol.h` are randomized shared memory name, magic value, pool tag. The compiled binary contains completely different strings and constants each time.
 
-### Layer 2 — Binary PE mutation
+### Layer 2 Binary PE mutation
 
 After compilation, 10 mutations are applied:
 
@@ -250,7 +250,7 @@ Every run produces binaries with a different SHA256 hash.
 |:---|:---|
 | `WDK not found` | Install [WDK](https://learn.microsoft.com/en-us/windows-hardware/drivers/download-the-wdk) matching your SDK version |
 | `'cl.exe' not recognized` | Use **x64 Native Tools Command Prompt** |
-| `LNK2001 unresolved external` | Undocumented APIs are resolved dynamically — don't link them statically |
+| `LNK2001 unresolved external` | Undocumented APIs are resolved dynamically don't link them statically |
 
 </details>
 
@@ -260,7 +260,7 @@ Every run produces binaries with a different SHA256 hash.
 | Error | Fix |
 |:---|:---|
 | `Access denied` | Run as Administrator |
-| `StartService FAILED 577` | Driver unsigned — enable test signing + self-sign |
+| `StartService FAILED 577` | Driver unsigned enable test signing + self-sign |
 | `Value protected by Secure Boot` | Disable Secure Boot in BIOS first |
 | `Memory Integrity blocking` | Windows Security → Core Isolation → Memory integrity → Off |
 | BSOD with kdmapper | Use test signing method instead |
@@ -272,11 +272,11 @@ Every run produces binaries with a different SHA256 hash.
 
 | Error | Fix |
 |:---|:---|
-| `Cannot connect` | Driver not loaded — run `sc start nanahira` first |
+| `Cannot connect` | Driver not loaded run `sc start nanahira` first |
 | `Process not found` | Target must already be running |
 | `Invalid PE` | Must be a valid x64 DLL |
-| `Import resolution failed` | Required DLL not loaded in target — try hook or usermode mode |
-| Target crashes | Check Event Viewer for `0xC0000005` — DLL access violation |
+| `Import resolution failed` | Required DLL not loaded in target try hook or usermode mode |
+| Target crashes | Check Event Viewer for `0xC0000005` DLL access violation |
 
 </details>
 
@@ -286,8 +286,8 @@ Every run produces binaries with a different SHA256 hash.
 
 Special thanks to the following projects and authors for their contributions to the injection techniques used in this project:
 
-- [TTKKO/Kernel-Manual-Map-Injector](https://github.com/TTKKO/Kernel-Manual-Map-Injector) — WinEventHook and shellcode logic.
-- [TheCruZ/Simple-Manual-Map-Injector](https://github.com/TheCruZ/Simple-Manual-Map-Injector) — Manual mapping concepts and IAT references.
+- [TTKKO/Kernel-Manual-Map-Injector](https://github.com/TTKKO/Kernel-Manual-Map-Injector) WinEventHook and shellcode logic.
+- [TheCruZ/Simple-Manual-Map-Injector](https://github.com/TheCruZ/Simple-Manual-Map-Injector) Manual mapping concepts and IAT references.
 
 ---
 
