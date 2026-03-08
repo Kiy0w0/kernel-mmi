@@ -7,23 +7,8 @@
 </p>
 
 <p align="center">
-  <img src="https://readme-typing-svg.demolab.com?font=JetBrains+Mono&weight=800&size=36&duration=3000&pause=1000&color=A855F7&center=true&vCenter=true&width=500&lines=N+A+N+A+H+I+R+A;Kernel+Manual+Map;Ring-0+Injection+🔮" alt="Typing" />
+  <img src="sxxi/nanahira.jpg" width="600" alt="Nanahira Header" />
 </p>
-
-<h3 align="center">
-  <code>
-    ╔════════════════════════════════════════════════════════════╗<br>
-    ║&nbsp;&nbsp; ███╗   ██╗ █████╗ ███╗   ██╗ █████╗ ██╗  ██╗██╗██████╗  █████╗ &nbsp;&nbsp;║<br>
-    ║&nbsp;&nbsp; ████╗  ██║██╔══██╗████╗  ██║██╔══██╗██║  ██║██║██╔══██╗██╔══██╗&nbsp;&nbsp;║<br>
-    ║&nbsp;&nbsp; ██╔██╗ ██║███████║██╔██╗ ██║███████║███████║██║██████╔╝███████║&nbsp;&nbsp;║<br>
-    ║&nbsp;&nbsp; ██║╚██╗██║██╔══██║██║╚██╗██║██╔══██║██╔══██║██║██╔══██╗██╔══██║&nbsp;&nbsp;║<br>
-    ║&nbsp;&nbsp; ██║ ╚████║██║  ██║██║ ╚████║██║  ██║██║  ██║██║██║  ██║██║  ██║&nbsp;&nbsp;║<br>
-    ║&nbsp;&nbsp; ╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚═╝  ╚═╝╚═╝  ╚═╝&nbsp;&nbsp;║<br>
-    ║&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;║<br>
-    ║&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Ring-0 Kernel Manual Map DLL Injection Engine&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;║<br>
-    ╚════════════════════════════════════════════════════════════╝
-  </code>
-</h3>
 
 <p align="center">
   <b>by Kiy0w0</b><br>
