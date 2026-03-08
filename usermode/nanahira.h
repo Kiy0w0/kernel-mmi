@@ -1,10 +1,5 @@
 #pragma once
 
-//=============================================================================
-// Usermode Injector — Header
-// Source: https://github.com/Kiy0w0/kernel-mmi
-//=============================================================================
-
 #ifndef INJECTOR_H
 #define INJECTOR_H
 
@@ -16,6 +11,19 @@
 #include <time.h>
 
 #include "../shared/protocol.h"
+#include "xor.h"
+#include "lazy_importer.h"
+#include "usermode_inject.h"
+#include "hook_inject.h"
+
+// Injection mode — selectable at runtime
+typedef enum _INJECT_MODE {
+    MODE_KERNEL  = 0, // Default: kernel driver via shared memory
+    MODE_HOOK    = 1, // WinEventHook + shellcode (from KMI)
+    MODE_USERMODE = 2, // Fallback: VirtualAllocEx + WPM + CRT (from IAT)
+} INJECT_MODE;
+
+extern INJECT_MODE g_InjectMode;
 
 //-----------------------------------------------------------------------------
 // Console colors & UI

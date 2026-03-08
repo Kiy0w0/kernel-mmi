@@ -17,9 +17,9 @@
 #include "discord_rpc.h"
 #include <conio.h>
 
-// Change this to your Discord Application ID
-// Create one at: https://discord.com/developers/applications
 #define DISCORD_APP_ID "1472658353913204737"
+
+INJECT_MODE g_InjectMode = MODE_KERNEL;
 
 //=============================================================================
 // Gradient Banner
@@ -210,13 +210,13 @@ static const char* GetStatusString(LONG status) {
 //=============================================================================
 
 static void InteractiveMode(void) {
-    char procName[256] = { 0 };
+    char procName[256]   = { 0 };
     char dllPath[MAX_PATH] = { 0 };
+    char modeStr[32]     = { 0 };
 
     printf("  " CLR_CYAN "Target process name" CLR_RESET ": ");
     fflush(stdout);
     if (!fgets(procName, sizeof(procName), stdin)) return;
-    // Strip newline
     procName[strcspn(procName, "\r\n")] = 0;
 
     printf("  " CLR_CYAN "DLL path" CLR_RESET ": ");
@@ -224,7 +224,46 @@ static void InteractiveMode(void) {
     if (!fgets(dllPath, sizeof(dllPath), stdin)) return;
     dllPath[strcspn(dllPath, "\r\n")] = 0;
 
+    printf("  " CLR_CYAN "Mode" CLR_RESET " [kernel/hook/usermode, default=kernel]: ");
+    fflush(stdout);
+    if (fgets(modeStr, sizeof(modeStr), stdin)) {
+        modeStr[strcspn(modeStr, "\r\n")] = 0;
+        if (strcmp(modeStr, xor_a("hook")) == 0)     g_InjectMode = MODE_HOOK;
+        else if (strcmp(modeStr, xor_a("usermode")) == 0) g_InjectMode = MODE_USERMODE;
+        else                                           g_InjectMode = MODE_KERNEL;
+    }
+
     printf("\n");
+
+    // Hook mode dispatch
+    if (g_InjectMode == MODE_HOOK) {
+        PrintStep(1, 2, xor_a("Locating target process..."));
+        DWORD pid = FindProcessId(procName);
+        if (!pid) { PrintErr(xor_a("Process not found")); return; }
+        char pidMsg[128]; sprintf_s(pidMsg, sizeof(pidMsg), "Found PID %u", pid);
+        PrintOk(pidMsg);
+        wchar_t wDll[MAX_PATH] = {};
+        MultiByteToWideChar(CP_ACP, 0, dllPath, -1, wDll, MAX_PATH);
+        PrintStep(2, 2, xor_a("Injecting via WinEventHook..."));
+        if (HookInjector::inject(pid, wDll)) PrintOk(xor_a("Hook injection successful"));
+        else PrintErr(xor_a("Hook injection failed"));
+        return;
+    }
+
+    // Usermode fallback dispatch
+    if (g_InjectMode == MODE_USERMODE) {
+        PrintStep(1, 2, xor_a("Locating target process..."));
+        DWORD pid = FindProcessId(procName);
+        if (!pid) { PrintErr(xor_a("Process not found")); return; }
+        char pidMsg[128]; sprintf_s(pidMsg, sizeof(pidMsg), "Found PID %u", pid);
+        PrintOk(pidMsg);
+        wchar_t wDll[MAX_PATH] = {};
+        MultiByteToWideChar(CP_ACP, 0, dllPath, -1, wDll, MAX_PATH);
+        PrintStep(2, 2, xor_a("Injecting via usermode fallback..."));
+        if (UmInjector::inject(pid, wDll)) PrintOk(xor_a("Usermode injection successful"));
+        else PrintErr(xor_a("Usermode injection failed"));
+        return;
+    }
 
     // --- Validate inputs ---
     PrintStep(1, 6, "Locating target process...");
@@ -302,6 +341,7 @@ static void InteractiveMode(void) {
 
     hdr->TargetPid   = pid;
     hdr->PayloadSize  = dllSize;
+    hdr->Flags        = INJ_FLAG_ERASE_HEADERS;
     hdr->BaseAddr     = 0;
     InterlockedExchange(&hdr->Progress, 0);
 
@@ -346,8 +386,7 @@ static void InteractiveMode(void) {
     printf("\n");
     DisconnectDriver(hdr);
 
-    // Update Discord
-    Discord_UpdatePresence("Finished", "Nanahira Kernel Injector", "nanahira", "Kernel Manual Map Injector", "kiy0w0", "by kiy0w0");
+    Discord_UpdatePresence(xor_a("Finished"), xor_a("Nanahira Kernel Injector"), xor_a("nanahira"), xor_a("Kernel Manual Map Injector"), xor_a("kiy0w0"), xor_a("by kiy0w0"));
 }
 
 //=============================================================================
@@ -402,11 +441,43 @@ int main(int argc, char* argv[])
     }
 
     if (argc >= 3) {
-        // Command-line mode: nanahira.exe <process> <dll>
         const char* procName = argv[1];
         const char* dllPath  = argv[2];
 
-        PrintStep(1, 6, "Locating target process...");
+        // Optional: --mode=hook | --mode=usermode | --mode=kernel
+        for (int i = 3; i < argc; i++) {
+            if (strcmp(argv[i], xor_a("--mode=hook")) == 0)     g_InjectMode = MODE_HOOK;
+            if (strcmp(argv[i], xor_a("--mode=usermode")) == 0) g_InjectMode = MODE_USERMODE;
+            if (strcmp(argv[i], xor_a("--mode=kernel")) == 0)   g_InjectMode = MODE_KERNEL;
+        }
+
+        if (g_InjectMode == MODE_HOOK) {
+            PrintStep(1, 2, xor_a("Locating target process..."));
+            DWORD pid = FindProcessId(procName);
+            if (!pid) { PrintErr(xor_a("Process not found")); _getch(); return 1; }
+            wchar_t wDll[MAX_PATH] = {};
+            MultiByteToWideChar(CP_ACP, 0, dllPath, -1, wDll, MAX_PATH);
+            PrintStep(2, 2, xor_a("Injecting via WinEventHook..."));
+            if (HookInjector::inject(pid, wDll)) PrintOk(xor_a("Hook injection successful"));
+            else PrintErr(xor_a("Hook injection failed"));
+            printf("\n  Press any key...\n"); _getch();
+            return 0;
+        }
+
+        if (g_InjectMode == MODE_USERMODE) {
+            PrintStep(1, 2, xor_a("Locating target process..."));
+            DWORD pid = FindProcessId(procName);
+            if (!pid) { PrintErr(xor_a("Process not found")); _getch(); return 1; }
+            wchar_t wDll[MAX_PATH] = {};
+            MultiByteToWideChar(CP_ACP, 0, dllPath, -1, wDll, MAX_PATH);
+            PrintStep(2, 2, xor_a("Injecting via usermode fallback..."));
+            if (UmInjector::inject(pid, wDll)) PrintOk(xor_a("Usermode injection successful"));
+            else PrintErr(xor_a("Usermode injection failed"));
+            printf("\n  Press any key...\n"); _getch();
+            return 0;
+        }
+
+        PrintStep(1, 6, xor_a("Locating target process..."));
 
         DWORD pid = FindProcessId(procName);
         if (pid == 0) {
@@ -476,6 +547,7 @@ int main(int argc, char* argv[])
         memcpy(payloadDst, dllData, dllSize);
         hdr->TargetPid  = pid;
         hdr->PayloadSize = dllSize;
+        hdr->Flags       = INJ_FLAG_ERASE_HEADERS;
         hdr->BaseAddr    = 0;
         InterlockedExchange(&hdr->Progress, 0);
         free(dllData);
@@ -504,16 +576,15 @@ int main(int argc, char* argv[])
         printf("\n");
         DisconnectDriver(hdr);
 
-        Discord_UpdatePresence("Finished", "Nanahira Kernel Injector", "nanahira", "Kernel Manual Map Injector", "kiy0w0", "by kiy0w0");
+        Discord_UpdatePresence(xor_a("Finished"), xor_a("Nanahira Kernel Injector"), xor_a("nanahira"), xor_a("Kernel Manual Map Injector"), xor_a("kiy0w0"), xor_a("by kiy0w0"));
 
         printf("  Press any key to exit...\n");
         _getch();
         Discord_Shutdown();
         return 0;
     }
-    else {
-        // Interactive mode
-        Discord_UpdatePresence("Waiting for input", "Nanahira Kernel Injector", "nanahira", "Kernel Manual Map Injector", "kiy0w0", "by kiy0w0");
+    } else {
+        Discord_UpdatePresence(xor_a("Waiting for input"), xor_a("Nanahira Kernel Injector"), xor_a("nanahira"), xor_a("Kernel Manual Map Injector"), xor_a("kiy0w0"), xor_a("by kiy0w0"));
         InteractiveMode();
         printf("\n  Press any key to exit...\n");
         _getch();

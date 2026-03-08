@@ -47,6 +47,7 @@ typedef enum _IPC_COMMAND {
     IPC_CMD_INJECT      = 1,
     IPC_CMD_PING        = 2,
     IPC_CMD_CLEANUP     = 3,
+    IPC_CMD_STATUS      = 4,
 } IPC_COMMAND;
 
 //-----------------------------------------------------------------------------
@@ -99,6 +100,8 @@ typedef struct _SHARED_HEADER {
     // Injection params (written by usermode)
     unsigned int        TargetPid;
     unsigned int        PayloadSize;
+    unsigned int        Flags;
+    unsigned int        _reserved;
 
     // Result (written by driver)
     unsigned long long  BaseAddr;
@@ -107,8 +110,8 @@ typedef struct _SHARED_HEADER {
     volatile long       Progress;
     char                Message[128];
 
-    // Padding — keep header at 256 bytes total
-    unsigned char       _pad[92];
+    // Padding to keep header at 256 bytes
+    unsigned char       _pad[84];
 
 } SHARED_HEADER;
 
