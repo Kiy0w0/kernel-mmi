@@ -1,18 +1,4 @@
-/*
- * nanahira — Kernel Manual Map Injector
- * Usermode: DLL loader + IPC client + Console UI
- *
- * Source: https://github.com/Kiy0w0/kernel-mmi
- *
- * This component does NOT perform any injection.
- * It only reads the DLL from disk and writes it to shared memory.
- * The kernel driver handles the actual manual map injection.
- *
- * Usage:
- *   nanahira.exe <process> <dll_path>
- *   nanahira.exe                        (interactive mode)
- */
-
+﻿
 #include "nanahira.h"
 #include "discord_rpc.h"
 #include <conio.h>
@@ -20,10 +6,6 @@
 #define DISCORD_APP_ID "1472658353913204737"
 
 INJECT_MODE g_InjectMode = MODE_KERNEL;
-
-//=============================================================================
-// Gradient Banner
-//=============================================================================
 
 typedef struct { int r, g, b; } RGB;
 
@@ -48,9 +30,8 @@ static void PrintGradientLine(const char* text, RGB start, RGB end) {
 static void PrintBanner(void) {
     printf("\n");
 
-    // Title with gradient
-    RGB gradStart = { 180, 100, 255 };  // Purple
-    RGB gradEnd   = { 80, 200, 255 };   // Cyan
+    RGB gradStart = { 180, 100, 255 };
+    RGB gradEnd   = { 80, 200, 255 };
 
     PrintGradientLine("  N A N A H I R A", gradStart, gradEnd);
     printf("\n");
@@ -62,17 +43,10 @@ static void PrintBanner(void) {
     printf("  " CLR_DIM "https://github.com/Kiy0w0/kernel-mmi" CLR_RESET "\n");
     printf("\n");
 
-    // Separator line (plain dashes)
     printf("  " CLR_PURPLE);
     for (int i = 0; i < 50; i++) printf("-");
     printf(CLR_RESET "\n\n");
 }
-
-
-
-//=============================================================================
-// Status Messages
-//=============================================================================
 
 static void PrintStatus(const char* icon, const char* color, const char* msg) {
     printf("  %s %s%s%s\n", icon, color, msg, CLR_RESET);
@@ -87,10 +61,6 @@ static void PrintStep(int step, int total, const char* msg) {
     printf("  " CLR_PURPLE "[%d/%d]" CLR_RESET " %s%s%s\n",
         step, total, CLR_WHITE, msg, CLR_RESET);
 }
-
-//=============================================================================
-// Progress Bar
-//=============================================================================
 
 static void DrawProgressBar(int pct, const char* label) {
     const int barWidth = 40;
@@ -114,49 +84,51 @@ static void DrawProgressBar(int pct, const char* label) {
     fflush(stdout);
 }
 
-//=============================================================================
-// Map Shared Memory (Connect to Driver)
-//=============================================================================
-
 static SHARED_HEADER* ConnectToDriver(void) {
-    HANDLE hSection = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, UM_SECTION_NAME);
-    if (!hSection) {
-        return NULL;
+
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+
+    BYTE* addr = (BYTE*)si.lpMinimumApplicationAddress;
+    const BYTE* end = (BYTE*)si.lpMaximumApplicationAddress;
+
+    while (addr < end) {
+        MEMORY_BASIC_INFORMATION mbi = {};
+        if (!VirtualQuery(addr, &mbi, sizeof(mbi))) break;
+
+        if (mbi.State == MEM_COMMIT &&
+            mbi.RegionSize >= sizeof(SHARED_HEADER) &&
+            (mbi.Protect == PAGE_READWRITE || mbi.Protect == PAGE_READWRITE | PAGE_NOCACHE)) {
+
+            __try {
+                volatile SHARED_HEADER* hdr = (volatile SHARED_HEADER*)mbi.BaseAddress;
+                if (hdr->Magic   == PROTO_MAGIC &&
+                    hdr->Version == ((PROTO_VER_MAJOR << 16) | PROTO_VER_MINOR)) {
+                    return (SHARED_HEADER*)mbi.BaseAddress;
+                }
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) {}
+        }
+
+        addr = (BYTE*)mbi.BaseAddress + (mbi.RegionSize ? mbi.RegionSize : 4096);
     }
 
-    PVOID view = MapViewOfFile(hSection, FILE_MAP_ALL_ACCESS, 0, 0, SHM_TOTAL_SIZE);
-    CloseHandle(hSection);  // View keeps ref
-
-    if (!view) {
-        return NULL;
-    }
-
-    SHARED_HEADER* hdr = (SHARED_HEADER*)view;
-    if (hdr->Magic != PROTO_MAGIC) {
-        UnmapViewOfFile(view);
-        return NULL;
-    }
-
-    return hdr;
+    return NULL;
 }
 
 static void DisconnectDriver(SHARED_HEADER* hdr) {
-    if (hdr) UnmapViewOfFile(hdr);
-}
 
-//=============================================================================
-// Wait for injection result
-//=============================================================================
+    (void)hdr;
+}
 
 static BOOL WaitForResult(SHARED_HEADER* hdr, int timeoutMs) {
     DWORD start = GetTickCount();
     int lastPct = -1;
 
     while ((int)(GetTickCount() - start) < timeoutMs) {
-        LONG status = InterlockedCompareExchange(&hdr->Status, 0, 0);  // atomic read
+        LONG status = InterlockedCompareExchange(&hdr->Status, 0, 0);
         LONG pct = InterlockedCompareExchange(&hdr->Progress, 0, 0);
 
-        // Update progress bar if changed
         if (pct != lastPct) {
             DrawProgressBar((int)pct, hdr->Message);
             lastPct = (int)pct;
@@ -169,7 +141,7 @@ static BOOL WaitForResult(SHARED_HEADER* hdr, int timeoutMs) {
         }
 
         if (status >= IPC_ERR_PROCESS) {
-            // Error occurred
+
             printf("\n");
             return FALSE;
         }
@@ -180,10 +152,6 @@ static BOOL WaitForResult(SHARED_HEADER* hdr, int timeoutMs) {
     printf("\n");
     return FALSE;
 }
-
-//=============================================================================
-// Get error description
-//=============================================================================
 
 static const char* GetStatusString(LONG status) {
     switch (status) {
@@ -204,10 +172,6 @@ static const char* GetStatusString(LONG status) {
         default:                 return "Unrecognized status";
     }
 }
-
-//=============================================================================
-// Interactive Mode
-//=============================================================================
 
 static void InteractiveMode(void) {
     char procName[256]   = { 0 };
@@ -235,7 +199,6 @@ static void InteractiveMode(void) {
 
     printf("\n");
 
-    // Hook mode dispatch
     if (g_InjectMode == MODE_HOOK) {
         PrintStep(1, 2, xor_a("Locating target process..."));
         DWORD pid = FindProcessId(procName);
@@ -250,7 +213,6 @@ static void InteractiveMode(void) {
         return;
     }
 
-    // Usermode fallback dispatch
     if (g_InjectMode == MODE_USERMODE) {
         PrintStep(1, 2, xor_a("Locating target process..."));
         DWORD pid = FindProcessId(procName);
@@ -265,7 +227,6 @@ static void InteractiveMode(void) {
         return;
     }
 
-    // --- Validate inputs ---
     PrintStep(1, 6, "Locating target process...");
 
     DWORD pid = FindProcessId(procName);
@@ -280,7 +241,6 @@ static void InteractiveMode(void) {
     sprintf_s(pidMsg, sizeof(pidMsg), "Found: %s (PID %u)", procName, pid);
     PrintOk(pidMsg);
 
-    // --- Read DLL ---
     PrintStep(2, 6, "Reading DLL file...");
 
     DWORD dllSize = 0;
@@ -302,7 +262,6 @@ static void InteractiveMode(void) {
         return;
     }
 
-    // --- Validate PE ---
     PrintStep(3, 6, "Validating PE format...");
 
     if (!QuickValidatePE(dllData, dllSize)) {
@@ -312,7 +271,6 @@ static void InteractiveMode(void) {
     }
     PrintOk("Valid x64 DLL confirmed");
 
-    // --- Connect to driver ---
     PrintStep(4, 6, "Connecting to driver...");
 
     SHARED_HEADER* hdr = ConnectToDriver();
@@ -333,7 +291,6 @@ static void InteractiveMode(void) {
 
     PrintOk("Driver connection established");
 
-    // --- Write DLL to shared memory ---
     PrintStep(5, 6, "Preparing payload...");
 
     BYTE* payloadDst = (BYTE*)hdr + PAYLOAD_DATA_OFFSET;
@@ -348,13 +305,11 @@ static void InteractiveMode(void) {
     free(dllData);
     PrintOk("Payload written to shared memory");
 
-    // --- Send inject command ---
     PrintStep(6, 6, "Sending injection command...");
     printf("\n");
 
     InterlockedExchange(&hdr->Command, IPC_CMD_INJECT);
 
-    // Wait for result
     if (WaitForResult(hdr, POLL_TIMEOUT_MS)) {
         printf("\n");
         printf("  " CLR_GREEN CLR_BOLD "INJECTION SUCCESSFUL" CLR_RESET "\n");
@@ -389,35 +344,25 @@ static void InteractiveMode(void) {
     Discord_UpdatePresence(xor_a("Finished"), xor_a("Nanahira Kernel Injector"), xor_a("nanahira"), xor_a("Kernel Manual Map Injector"), xor_a("kiy0w0"), xor_a("by kiy0w0"));
 }
 
-//=============================================================================
-// Main
-//=============================================================================
-
 int main(int argc, char* argv[])
 {
-    // Set console title
+
     SetConsoleTitleA("nanahira — Kernel Manual Map Injector");
 
-    // Enable UTF-8 output so Unicode banner/icons display correctly
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
 
-    // Enable ANSI colors
     EnableAnsiConsole();
 
-    // Set console size
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    SMALL_RECT rect = { 0, 0, 99, 39 };  // 100x40
+    SMALL_RECT rect = { 0, 0, 99, 39 };
     SetConsoleWindowInfo(hOut, TRUE, &rect);
 
-    // Print banner
     PrintBanner();
 
-    // Init Discord Rich Presence
     Discord_Init(DISCORD_APP_ID);
     Discord_UpdatePresence("Idle", "Nanahira Kernel Injector", "nanahira", "Kernel Manual Map Injector", "kiy0w0", "by kiy0w0");
 
-    // Check admin
     BOOL isAdmin = FALSE;
     {
         HANDLE token = NULL;
@@ -444,7 +389,6 @@ int main(int argc, char* argv[])
         const char* procName = argv[1];
         const char* dllPath  = argv[2];
 
-        // Optional: --mode=hook | --mode=usermode | --mode=kernel
         for (int i = 3; i < argc; i++) {
             if (strcmp(argv[i], xor_a("--mode=hook")) == 0)     g_InjectMode = MODE_HOOK;
             if (strcmp(argv[i], xor_a("--mode=usermode")) == 0) g_InjectMode = MODE_USERMODE;
@@ -592,3 +536,4 @@ int main(int argc, char* argv[])
         return 0;
     }
 }
+

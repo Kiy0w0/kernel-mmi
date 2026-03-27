@@ -1,12 +1,10 @@
-#pragma once
+﻿#pragma once
 
 #include <ntifs.h>
 #include <ntimage.h>
 #include <ntstrsafe.h>
 
 #include "../shared/protocol.h"
-
-// Undocumented structures
 
 typedef struct _PEB_LDR_DATA {
     ULONG       Length;
@@ -43,8 +41,6 @@ typedef struct _PEB {
     PPEB_LDR_DATA Ldr;
     PVOID         ProcessParameters;
 } PEB, *PPEB;
-
-// NT exports not in standard headers
 
 NTSYSAPI NTSTATUS NTAPI ZwOpenProcess(
     _Out_    PHANDLE            ProcessHandle,
@@ -89,8 +85,6 @@ NTSYSAPI BOOLEAN NTAPI RtlAddFunctionTable(
     _In_ ULONG64           BaseAddress
 );
 
-// Dynamically resolved function pointers
-
 typedef NTSTATUS (NTAPI *fn_MmCopyVirtualMemory)(
     PEPROCESS, PVOID, PEPROCESS, PVOID, SIZE_T, KPROCESSOR_MODE, PSIZE_T
 );
@@ -113,8 +107,6 @@ extern fn_RtlCreateUserThread    pfnRtlCreateUserThread;
 
 NTSTATUS ResolveDynamicImports(VOID);
 
-// PE helpers
-
 static __forceinline PIMAGE_NT_HEADERS64 RtlImageNtHeader(PVOID Base) {
     PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)Base;
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) return NULL;
@@ -127,14 +119,10 @@ static __forceinline PIMAGE_SECTION_HEADER RtlFirstSection(PIMAGE_NT_HEADERS64 N
     return (PIMAGE_SECTION_HEADER)((ULONG_PTR)&Nt->OptionalHeader + Nt->FileHeader.SizeOfOptionalHeader);
 }
 
-// Injection flags — stored in SHARED_HEADER.Flags
-
 #define INJ_FLAG_ERASE_HEADERS   0x01
 #define INJ_FLAG_STOMP_HEADERS   0x02
 #define INJ_FLAG_SKIP_TLS        0x04
 #define INJ_FLAG_SKIP_EXCEPTIONS 0x08
-
-// Internal API
 
 NTSTATUS CreateSharedSection(VOID);
 VOID     DestroySharedSection(VOID);
@@ -196,3 +184,4 @@ PVOID FindModuleBase(_In_ PEPROCESS Process, _In_ PCWSTR ModName);
 PVOID FindExportSafe(_In_ PVOID ModBase, _In_ PCCH FuncName);
 PVOID FindExportByOrdinal(_In_ PVOID ModBase, _In_ USHORT Ordinal);
 PVOID ResolveForwardedExport(_In_ PEPROCESS Process, _In_ const char* ForwardStr);
+

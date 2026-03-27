@@ -32,3 +32,6 @@ Release/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Dev tools
+tools/fmt.ps1

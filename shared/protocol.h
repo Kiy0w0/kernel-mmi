@@ -1,47 +1,23 @@
-#pragma once
-
-//=============================================================================
-// Shared Protocol Header
-// 
-// Shared between the kernel driver and usermode injector.
-// Defines IPC communication protocol via named shared memory section.
-//=============================================================================
+﻿#pragma once
 
 #ifndef SHARED_PROTOCOL_H
 #define SHARED_PROTOCOL_H
 
-//-----------------------------------------------------------------------------
-// Configuration
-//-----------------------------------------------------------------------------
+#define INJECTOR_PROCESS_NAME   L"nanahira.exe"
 
-// Section name — kernel-mode (NT path)
-#define KM_SECTION_PATH         L"\\BaseNamedObjects\\Global\\SharedMapSec"
+#define PROTO_MAGIC             0x4D505348
 
-// Section name — user-mode
-#define UM_SECTION_NAME         "Global\\SharedMapSec"
-
-// Handshake magic — verifies shared memory ownership
-#define PROTO_MAGIC             0x4D505348  // 'MPSH'
-
-// Kernel pool tag
 #define DRV_POOL_TAG            'pMhS'
 
-// Shared memory size (16 MB)
 #define SHM_TOTAL_SIZE          (16 * 1024 * 1024)
 
-// Max supported DLL file size (15 MB)
 #define MAX_PAYLOAD_SIZE        (15 * 1024 * 1024)
 
-// Usermode poll timeout (ms)
 #define POLL_TIMEOUT_MS         10000
 
-// Version info
 #define PROTO_VER_MAJOR         1
 #define PROTO_VER_MINOR         0
 
-//-----------------------------------------------------------------------------
-// Command Codes (usermode -> driver)
-//-----------------------------------------------------------------------------
 typedef enum _IPC_COMMAND {
     IPC_CMD_NONE        = 0,
     IPC_CMD_INJECT      = 1,
@@ -50,9 +26,6 @@ typedef enum _IPC_COMMAND {
     IPC_CMD_STATUS      = 4,
 } IPC_COMMAND;
 
-//-----------------------------------------------------------------------------
-// Status Codes (driver -> usermode)
-//-----------------------------------------------------------------------------
 typedef enum _IPC_STATUS {
     IPC_IDLE             = 0,
     IPC_READY            = 1,
@@ -70,47 +43,26 @@ typedef enum _IPC_STATUS {
     IPC_ERR_UNKNOWN      = 99,
 } IPC_STATUS;
 
-//-----------------------------------------------------------------------------
-// Shared Memory Layout
-//
-//   [SHARED_HEADER]    256 bytes at offset 0
-//   [raw DLL bytes]    starts at offset 256
-//
-// Flow:
-//   1. Driver creates named section, maps it, sets Magic + READY
-//   2. Usermode opens section, validates magic
-//   3. Usermode writes DLL bytes after header, fills in PayloadSize + PID
-//   4. Usermode sets Command = IPC_CMD_INJECT
-//   5. Driver picks up command, performs manual map
-//   6. Driver writes back Status, BaseAddr
-//   7. Usermode polls Status for result
-//-----------------------------------------------------------------------------
-
 #pragma pack(push, 8)
 
 typedef struct _SHARED_HEADER {
-    // Identification
+
     unsigned int        Magic;
     unsigned int        Version;
 
-    // IPC
     volatile long       Command;
     volatile long       Status;
 
-    // Injection params (written by usermode)
     unsigned int        TargetPid;
     unsigned int        PayloadSize;
     unsigned int        Flags;
     unsigned int        _reserved;
 
-    // Result (written by driver)
     unsigned long long  BaseAddr;
 
-    // Progress
     volatile long       Progress;
     char                Message[128];
 
-    // Padding to keep header at 256 bytes
     unsigned char       _pad[84];
 
 } SHARED_HEADER;
@@ -123,4 +75,5 @@ static_assert(sizeof(SHARED_HEADER) == 256, "Header must be 256 bytes");
 
 #define PAYLOAD_DATA_OFFSET     sizeof(SHARED_HEADER)
 
-#endif // SHARED_PROTOCOL_H
+#endif
+

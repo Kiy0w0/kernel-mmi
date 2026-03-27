@@ -1,29 +1,14 @@
-/*
- * nanahira — Kernel Manual Map Injector
- * Driver: Ring-0 Manual Map Injection Engine
- *
- * Source: https://github.com/Kiy0w0/kernel-mmi
- *
- * All PE operations (parsing, section mapping, relocations, import
- * resolution, memory protection, DllMain call) happen in kernel space.
- * The usermode component only reads the DLL file and writes it to
- * shared memory — zero injection APIs from Ring 3.
- */
-
+﻿
 #include "driver.h"
 
-//=============================================================================
-// Globals
-//=============================================================================
-
-static HANDLE           g_SectionHandle  = NULL;
-static PVOID            g_MappedView     = NULL;
-static SIZE_T           g_ViewSize       = 0;
+static PVOID            g_SharedBuffer   = NULL;
+static PMDL             g_SharedMdl      = NULL;
+static PVOID            g_UserMappedVa   = NULL;
+static PEPROCESS        g_InjectorProc   = NULL;
 static HANDLE           g_WorkerThread   = NULL;
 static volatile BOOLEAN g_Shutdown       = FALSE;
 static SHARED_HEADER*   g_Header         = NULL;
 
-// Dynamically resolved function pointers
 fn_MmCopyVirtualMemory     pfnMmCopyVirtualMemory    = NULL;
 fn_PsGetProcessPeb         pfnPsGetProcessPeb        = NULL;
 fn_ZwProtectVirtualMemory  pfnZwProtectVirtualMemory = NULL;
@@ -59,10 +44,6 @@ NTSTATUS ResolveDynamicImports(VOID)
     return STATUS_SUCCESS;
 }
 
-//=============================================================================
-// Forward Declarations
-//=============================================================================
-
 static VOID   WorkerRoutine(_In_ PVOID Context);
 static VOID   UpdateProgress(_In_ LONG Pct, _In_ const char* Msg);
 static PVOID  FindModuleBase(_In_ PEPROCESS Process, _In_ PCWSTR ModName);
@@ -70,113 +51,133 @@ static PVOID  FindExport(_In_ PVOID ModBase, _In_ PCCH FuncName);
 static NTSTATUS WriteToProcess(_In_ PEPROCESS Target, _In_ PVOID Dest, _In_ PVOID Src, _In_ SIZE_T Size);
 static NTSTATUS ReadFromProcess(_In_ PEPROCESS Target, _In_ PVOID Src, _Out_ PVOID Dest, _In_ SIZE_T Size);
 
-//=============================================================================
-// Shared Section Management
-//=============================================================================
-
-NTSTATUS CreateSharedSection(VOID)
+NTSTATUS CreateSharedMemory(VOID)
 {
-    NTSTATUS            status;
-    UNICODE_STRING      sectionName;
-    OBJECT_ATTRIBUTES   objAttr;
-    LARGE_INTEGER       maxSize;
 
-    // Create a security descriptor with NULL DACL (allows usermode access)
-    SECURITY_DESCRIPTOR sd;
-    status = RtlCreateSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
-    if (!NT_SUCCESS(status)) {
-        DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
-            "[drv] RtlCreateSecurityDescriptor failed: 0x%08X\n", status);
-        return status;
-    }
-
-    // Set NULL DACL = everyone has full access
-    status = RtlSetDaclSecurityDescriptor(&sd, TRUE, NULL, FALSE);
-    if (!NT_SUCCESS(status)) {
-        DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
-            "[drv] RtlSetDaclSecurityDescriptor failed: 0x%08X\n", status);
-        return status;
-    }
-
-    RtlInitUnicodeString(&sectionName, KM_SECTION_PATH);
-    InitializeObjectAttributes(&objAttr, &sectionName,
-        OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, &sd);
-
-    maxSize.QuadPart = SHM_TOTAL_SIZE;
-
-    status = ZwCreateSection(
-        &g_SectionHandle,
-        SECTION_ALL_ACCESS,
-        &objAttr,
-        &maxSize,
-        PAGE_READWRITE,
-        SEC_COMMIT,
-        NULL
+    g_SharedBuffer = ExAllocatePool2(
+        POOL_FLAG_NON_PAGED | POOL_FLAG_ZERO_ALLOCATION,
+        SHM_TOTAL_SIZE, DRV_POOL_TAG
     );
+    if (!g_SharedBuffer) return STATUS_INSUFFICIENT_RESOURCES;
 
-    if (!NT_SUCCESS(status)) {
-        DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
-            "[drv] ZwCreateSection failed: 0x%08X\n", status);
-        return status;
+    g_SharedMdl = IoAllocateMdl(g_SharedBuffer, (ULONG)SHM_TOTAL_SIZE, FALSE, FALSE, NULL);
+    if (!g_SharedMdl) {
+        ExFreePoolWithTag(g_SharedBuffer, DRV_POOL_TAG);
+        g_SharedBuffer = NULL;
+        return STATUS_INSUFFICIENT_RESOURCES;
     }
 
-    g_ViewSize = SHM_TOTAL_SIZE;
-    status = ZwMapViewOfSection(
-        g_SectionHandle,
-        ZwCurrentProcess(),
-        &g_MappedView,
-        0, 0, NULL,
-        &g_ViewSize,
-        ViewUnmap,
-        0,
-        PAGE_READWRITE
-    );
+    MmBuildMdlForNonPagedPool(g_SharedMdl);
 
-    if (!NT_SUCCESS(status)) {
-        DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
-            "[drv] ZwMapViewOfSection failed: 0x%08X\n", status);
-        ZwClose(g_SectionHandle);
-        g_SectionHandle = NULL;
-        return status;
-    }
-
-    // Initialize header
-    RtlZeroMemory(g_MappedView, SHM_TOTAL_SIZE);
-    g_Header = (SHARED_HEADER*)g_MappedView;
-    g_Header->Magic   = PROTO_MAGIC;
-    g_Header->Version = (PROTO_VER_MAJOR << 16) | PROTO_VER_MINOR;
+    g_Header            = (SHARED_HEADER*)g_SharedBuffer;
+    g_Header->Magic     = PROTO_MAGIC;
+    g_Header->Version   = (PROTO_VER_MAJOR << 16) | PROTO_VER_MINOR;
     InterlockedExchange(&g_Header->Status, IPC_READY);
 
     DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
-        "[drv] Shared section created at %p, size=%llu\n",
-        g_MappedView, (ULONGLONG)g_ViewSize);
+        "[drv] Shared buffer at %p (%llu bytes), MDL built — no named object\n",
+        g_SharedBuffer, (ULONGLONG)SHM_TOTAL_SIZE);
 
     return STATUS_SUCCESS;
 }
 
-VOID DestroySharedSection(VOID)
+VOID DestroySharedMemory(VOID)
 {
-    if (g_MappedView) {
-        ZwUnmapViewOfSection(ZwCurrentProcess(), g_MappedView);
-        g_MappedView = NULL;
+    if (g_UserMappedVa && g_InjectorProc) {
+        KAPC_STATE apc;
+        KeStackAttachProcess(g_InjectorProc, &apc);
+        __try { MmUnmapLockedPages(g_UserMappedVa, g_SharedMdl); }
+        __except (EXCEPTION_EXECUTE_HANDLER) {}
+        KeUnstackDetachProcess(&apc);
+        g_UserMappedVa = NULL;
     }
-    if (g_SectionHandle) {
-        ZwClose(g_SectionHandle);
-        g_SectionHandle = NULL;
+    if (g_SharedMdl) {
+        IoFreeMdl(g_SharedMdl);
+        g_SharedMdl = NULL;
+    }
+    if (g_SharedBuffer) {
+        ExFreePoolWithTag(g_SharedBuffer, DRV_POOL_TAG);
+        g_SharedBuffer = NULL;
+    }
+    if (g_InjectorProc) {
+        ObDereferenceObject(g_InjectorProc);
+        g_InjectorProc = NULL;
     }
     g_Header = NULL;
 }
 
-//=============================================================================
-// Progress Reporting
-//=============================================================================
+static VOID ProcessNotifyCallback(
+    _In_     PEPROCESS            Process,
+    _In_     HANDLE               ProcessId,
+    _In_opt_ PPS_CREATE_NOTIFY_INFO CreateInfo)
+{
+    UNREFERENCED_PARAMETER(ProcessId);
+
+    if (!CreateInfo) {
+
+        if (Process == g_InjectorProc && g_UserMappedVa && g_SharedMdl) {
+            KAPC_STATE apc;
+            KeStackAttachProcess(Process, &apc);
+            __try { MmUnmapLockedPages(g_UserMappedVa, g_SharedMdl); }
+            __except (EXCEPTION_EXECUTE_HANDLER) {}
+            KeUnstackDetachProcess(&apc);
+            g_UserMappedVa = NULL;
+            ObDereferenceObject(g_InjectorProc);
+            g_InjectorProc = NULL;
+            DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL, "[drv] Injector exited, shared buffer unmapped\n");
+        }
+        return;
+    }
+
+    if (!CreateInfo->ImageFileName || !g_SharedMdl) return;
+
+    UNICODE_STRING* full = CreateInfo->ImageFileName;
+    USHORT          slash = 0;
+    for (USHORT i = 0; i < full->Length / sizeof(WCHAR); i++)
+        if (full->Buffer[i] == L'\\') slash = (USHORT)(i + 1);
+
+    UNICODE_STRING baseName = {
+        (USHORT)(full->Length - slash * sizeof(WCHAR)),
+        (USHORT)(full->Length - slash * sizeof(WCHAR)),
+        full->Buffer + slash
+    };
+    UNICODE_STRING injName;
+    RtlInitUnicodeString(&injName, INJECTOR_PROCESS_NAME);
+
+    if (RtlCompareUnicodeString(&baseName, &injName, TRUE) != 0) return;
+    if (g_InjectorProc) return;
+
+    PVOID mapped = NULL;
+    KAPC_STATE apc;
+    KeStackAttachProcess(Process, &apc);
+    __try {
+        mapped = MmMapLockedPagesSpecifyCache(
+            g_SharedMdl, UserMode, MmCached, NULL, FALSE,
+            (MM_PAGE_PRIORITY)(NormalPagePriority | MdlMappingNoExecute)
+        );
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) { mapped = NULL; }
+    KeUnstackDetachProcess(&apc);
+
+    if (!mapped) {
+        DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
+            "[drv] Failed to map shared buffer into injector\n");
+        return;
+    }
+
+    ObReferenceObject(Process);
+    g_InjectorProc = Process;
+    g_UserMappedVa = mapped;
+
+    DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
+        "[drv] Shared buffer mapped into injector at user VA %p\n", mapped);
+}
 
 static VOID UpdateProgress(_In_ LONG Pct, _In_ const char* Msg)
 {
     if (!g_Header) return;
     InterlockedExchange(&g_Header->Progress, Pct);
 
-    // Safe string copy
     SIZE_T len = 0;
     const char* p = Msg;
     while (*p && len < sizeof(g_Header->Message) - 1) {
@@ -187,10 +188,6 @@ static VOID UpdateProgress(_In_ LONG Pct, _In_ const char* Msg)
     DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
         "[drv] [%3ld%%] %s\n", Pct, Msg);
 }
-
-//=============================================================================
-// Process Memory R/W via MmCopyVirtualMemory
-//=============================================================================
 
 static NTSTATUS WriteToProcess(
     _In_ PEPROCESS Target,
@@ -225,10 +222,6 @@ static NTSTATUS ReadFromProcess(
         &bytes
     );
 }
-
-//=============================================================================
-// PE Validation
-//=============================================================================
 
 NTSTATUS ValidatePeImage(_In_ PVOID RawDll, _In_ ULONG DllSize)
 {
@@ -271,10 +264,6 @@ NTSTATUS ValidatePeImage(_In_ PVOID RawDll, _In_ ULONG DllSize)
     return STATUS_SUCCESS;
 }
 
-//=============================================================================
-// Section Mapping — Copy PE sections to allocated memory in target process
-//=============================================================================
-
 NTSTATUS MapSections(
     _In_ PEPROCESS          Process,
     _In_ PVOID              AllocBase,
@@ -283,7 +272,6 @@ NTSTATUS MapSections(
 {
     NTSTATUS status;
 
-    // 1. Copy PE headers
     status = WriteToProcess(Process, AllocBase, RawDll,
         Nt->OptionalHeader.SizeOfHeaders);
     if (!NT_SUCCESS(status)) {
@@ -292,12 +280,11 @@ NTSTATUS MapSections(
         return status;
     }
 
-    // 2. Copy each section
     PIMAGE_SECTION_HEADER sec = IMAGE_FIRST_SECTION(Nt);
     for (USHORT i = 0; i < Nt->FileHeader.NumberOfSections; i++, sec++) {
 
         if (sec->SizeOfRawData == 0)
-            continue;  // BSS or uninitialized — will be zeroed by allocation
+            continue;
 
         PVOID dst = (PVOID)((ULONG_PTR)AllocBase + sec->VirtualAddress);
         PVOID src = (PVOID)((ULONG_PTR)RawDll + sec->PointerToRawData);
@@ -318,10 +305,6 @@ NTSTATUS MapSections(
     return STATUS_SUCCESS;
 }
 
-//=============================================================================
-// Base Relocations
-//=============================================================================
-
 NTSTATUS ProcessRelocations(
     _In_ PEPROCESS           Process,
     _In_ PVOID               AllocBase,
@@ -329,22 +312,17 @@ NTSTATUS ProcessRelocations(
     _In_ ULONG_PTR           Delta)
 {
     if (Delta == 0)
-        return STATUS_SUCCESS;  // Loaded at preferred base, no relocs needed
+        return STATUS_SUCCESS;
 
     ULONG relocRva  = Nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress;
     ULONG relocSize = Nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size;
 
     if (relocRva == 0 || relocSize == 0) {
-        // No relocations — if delta != 0, this is a problem
+
         DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
             "[drv] No relocation table but delta=0x%llX\n", (ULONGLONG)Delta);
         return STATUS_SUCCESS;
     }
-
-    // We need to read the relocation data from the target process
-    // since we already mapped sections there. Alternatively, we can
-    // process from the raw DLL before mapping.
-    // Here we allocate a kernel buffer and read back from target.
 
     PVOID relocBuf = ExAllocatePool2(POOL_FLAG_NON_PAGED, relocSize, DRV_POOL_TAG);
     if (!relocBuf) return STATUS_INSUFFICIENT_RESOURCES;
@@ -361,7 +339,6 @@ NTSTATUS ProcessRelocations(
         return status;
     }
 
-    // Walk relocation blocks
     PIMAGE_BASE_RELOCATION block = (PIMAGE_BASE_RELOCATION)relocBuf;
     ULONG processed = 0;
 
@@ -374,7 +351,7 @@ NTSTATUS ProcessRelocations(
             USHORT offset = entries[i] & 0xFFF;
 
             if (type == IMAGE_REL_BASED_DIR64) {
-                // Read the 8-byte value, add delta, write back
+
                 ULONG_PTR patchAddr = (ULONG_PTR)AllocBase + block->VirtualAddress + offset;
                 ULONG_PTR value = 0;
 
@@ -399,7 +376,7 @@ NTSTATUS ProcessRelocations(
                 if (!NT_SUCCESS(status)) continue;
             }
             else if (type == IMAGE_REL_BASED_ABSOLUTE) {
-                // Padding, skip
+
             }
         }
 
@@ -415,11 +392,6 @@ NTSTATUS ProcessRelocations(
     return STATUS_SUCCESS;
 }
 
-//=============================================================================
-// Module & Export Lookup (PEB walking)
-//=============================================================================
-
-// Walk the target process PEB to find a loaded module
 static PVOID FindModuleBase(_In_ PEPROCESS Process, _In_ PCWSTR ModName)
 {
     PVOID result = NULL;
@@ -428,14 +400,13 @@ static PVOID FindModuleBase(_In_ PEPROCESS Process, _In_ PCWSTR ModName)
     KeStackAttachProcess(Process, &apcState);
 
     __try {
-        // Access PEB
+
         PPEB peb = pfnPsGetProcessPeb ? pfnPsGetProcessPeb(Process) : NULL;
         if (!peb) __leave;
 
         PPEB_LDR_DATA ldr = peb->Ldr;
         if (!ldr) __leave;
 
-        // Walk InLoadOrderModuleList
         PLIST_ENTRY head = &ldr->InLoadOrderModuleList;
         PLIST_ENTRY entry = head->Flink;
 
@@ -443,7 +414,7 @@ static PVOID FindModuleBase(_In_ PEPROCESS Process, _In_ PCWSTR ModName)
             PLDR_DATA_TABLE_ENTRY mod = CONTAINING_RECORD(entry, LDR_DATA_TABLE_ENTRY, InLoadOrderLinks);
 
             if (mod->BaseDllName.Buffer) {
-                // Case-insensitive compare
+
                 UNICODE_STRING target;
                 RtlInitUnicodeString(&target, ModName);
 
@@ -603,7 +574,6 @@ NTSTATUS ResolveImports(
         for (int j = 0; j < 255 && modNameBuf[j]; j++)
             wModName[j] = (WCHAR)modNameBuf[j];
 
-        // FindModuleBase does its own attach/detach — safe to call outside any attach context
         PVOID modBase = FindModuleBase(Process, wModName);
 
         if (!modBase) {
@@ -613,7 +583,6 @@ NTSTATUS ResolveImports(
             continue;
         }
 
-        // Attach once, walk all thunks for this module, then detach
         KAPC_STATE apc;
         KeStackAttachProcess(Process, &apc);
         __try {
@@ -657,10 +626,6 @@ NTSTATUS ResolveImports(
     return STATUS_SUCCESS;
 }
 
-//=============================================================================
-// Set Section Memory Protections
-//=============================================================================
-
 NTSTATUS SetSectionProtections(
     _In_ HANDLE              ProcHandle,
     _In_ PVOID               AllocBase,
@@ -695,40 +660,22 @@ NTSTATUS SetSectionProtections(
             DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
                 "[drv] ZwProtectVirtualMemory for '%.8s' failed: 0x%08X\n",
                 sec->Name, status);
-            // Non-fatal, continue
+
         }
     }
 
     return STATUS_SUCCESS;
 }
 
-//=============================================================================
-// Call DllMain via shellcode
-//
-// We inject a small stub that calls DllMain(hModule, DLL_PROCESS_ATTACH, 0)
-// and then returns. We create a thread in the target process to execute it.
-//=============================================================================
-
-// x64 shellcode template for calling DllMain
-// Registers: RCX = hModule, RDX = DLL_PROCESS_ATTACH (1), R8 = 0
-// sub rsp, 28h          ; shadow space
-// mov rcx, <hModule>    ; 10 bytes
-// mov rdx, 1            ; DLL_PROCESS_ATTACH
-// xor r8, r8            ; lpvReserved = NULL
-// mov rax, <EntryPoint> ; 10 bytes
-// call rax
-// add rsp, 28h
-// ret
-
 static const UCHAR g_ShellcodeTemplate[] = {
-    0x48, 0x83, 0xEC, 0x28,                         // sub rsp, 0x28
-    0x48, 0xB9, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov rcx, <hModule>
-    0x48, 0xC7, 0xC2, 0x01, 0x00, 0x00, 0x00,       // mov rdx, 1
-    0x4D, 0x31, 0xC0,                                // xor r8, r8
-    0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov rax, <EntryPoint>
-    0xFF, 0xD0,                                       // call rax
-    0x48, 0x83, 0xC4, 0x28,                          // add rsp, 0x28
-    0xC3                                              // ret
+    0x48, 0x83, 0xEC, 0x28,
+    0x48, 0xB9, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x48, 0xC7, 0xC2, 0x01, 0x00, 0x00, 0x00,
+    0x4D, 0x31, 0xC0,
+    0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xFF, 0xD0,
+    0x48, 0x83, 0xC4, 0x28,
+    0xC3
 };
 
 #define SHELLCODE_HMODULE_OFFSET  6
@@ -752,16 +699,13 @@ NTSTATUS CallEntryPoint(
     ULONG_PTR entryPoint = (ULONG_PTR)AllocBase + entryRva;
     ULONG_PTR hModule    = (ULONG_PTR)AllocBase;
 
-    // Build shellcode
     UCHAR shellcode[SHELLCODE_SIZE];
     RtlCopyMemory(shellcode, g_ShellcodeTemplate, SHELLCODE_SIZE);
 
-    // Patch in hModule
     *(ULONG_PTR*)(shellcode + SHELLCODE_HMODULE_OFFSET) = hModule;
-    // Patch in entry point
+
     *(ULONG_PTR*)(shellcode + SHELLCODE_ENTRY_OFFSET) = entryPoint;
 
-    // Allocate executable memory in target for shellcode
     HANDLE procHandle = NULL;
     CLIENT_ID clientId = { 0 };
     OBJECT_ATTRIBUTES objAttr;
@@ -787,7 +731,6 @@ NTSTATUS CallEntryPoint(
         return status;
     }
 
-    // Write shellcode
     status = WriteToProcess(Process, scBase, shellcode, SHELLCODE_SIZE);
     if (!NT_SUCCESS(status)) {
         ZwFreeVirtualMemory(procHandle, &scBase, &scSize, MEM_RELEASE);
@@ -795,7 +738,6 @@ NTSTATUS CallEntryPoint(
         return status;
     }
 
-    // Create thread to execute shellcode
     HANDLE threadHandle = NULL;
     if (!pfnRtlCreateUserThread) {
         ZwFreeVirtualMemory(procHandle, &scBase, &scSize, MEM_RELEASE);
@@ -805,21 +747,21 @@ NTSTATUS CallEntryPoint(
 
     status = pfnRtlCreateUserThread(
         procHandle,
-        NULL,       // SecurityDescriptor
-        FALSE,      // CreateSuspended
-        0,          // StackZeroBits
-        0,          // StackReserve
-        0,          // StackCommit
-        scBase,     // StartAddress
-        NULL,       // Parameter
+        NULL,
+        FALSE,
+        0,
+        0,
+        0,
+        scBase,
+        NULL,
         &threadHandle,
         NULL
     );
 
     if (NT_SUCCESS(status) && threadHandle) {
-        // Wait for thread to finish (max 5 seconds)
+
         LARGE_INTEGER timeout;
-        timeout.QuadPart = -50000000LL;  // 5 seconds relative
+        timeout.QuadPart = -50000000LL;
         ZwWaitForSingleObject(threadHandle, FALSE, &timeout);
         ZwClose(threadHandle);
     }
@@ -828,14 +770,12 @@ NTSTATUS CallEntryPoint(
             "[drv] RtlCreateUserThread failed: 0x%08X\n", status);
     }
 
-    // Free shellcode memory
     ZwFreeVirtualMemory(procHandle, &scBase, &scSize, MEM_RELEASE);
     ZwClose(procHandle);
 
     return status;
 }
 
-// TLS callback typedef as used by the OS
 typedef VOID (NTAPI *PIMAGE_TLS_CALLBACK)(PVOID DllHandle, ULONG Reason, PVOID Reserved);
 
 NTSTATUS ExecuteTlsCallbacks(
@@ -855,10 +795,8 @@ NTSTATUS ExecuteTlsCallbacks(
     );
     if (!NT_SUCCESS(status)) return status;
 
-    // AddressOfCallBacks is a VA in the loaded image pointing to a null-terminated array
     if (!tlsDir.AddressOfCallBacks) return STATUS_SUCCESS;
 
-    // Read up to 64 callback pointers
     ULONG_PTR callbacks[64] = { 0 };
     ReadFromProcess(
         Process,
@@ -870,7 +808,6 @@ NTSTATUS ExecuteTlsCallbacks(
     for (int i = 0; i < 64 && callbacks[i]; i++) {
         ULONG_PTR cbVa = callbacks[i];
 
-        // Build a tiny shellcode to call: callback(AllocBase, DLL_PROCESS_ATTACH, 0)
         UCHAR sc[40];
         RtlCopyMemory(sc, g_ShellcodeTemplate, sizeof(sc) < SHELLCODE_SIZE ? sizeof(sc) : SHELLCODE_SIZE);
         *(ULONG_PTR*)(sc + SHELLCODE_HMODULE_OFFSET) = (ULONG_PTR)AllocBase;
@@ -896,7 +833,7 @@ NTSTATUS ExecuteTlsCallbacks(
                 if (NT_SUCCESS(pfnRtlCreateUserThread(procHandle, NULL, FALSE, 0, 0, 0,
                                                        scBase, NULL, &thr, NULL))) {
                     LARGE_INTEGER timeout;
-                    timeout.QuadPart = -30000000LL; // 3s
+                    timeout.QuadPart = -30000000LL;
                     ZwWaitForSingleObject(thr, FALSE, &timeout);
                     ZwClose(thr);
                 }
@@ -922,7 +859,6 @@ NTSTATUS ResolveDelayImports(
 
     if (!delayRva || !delaySize) return STATUS_SUCCESS;
 
-    // IMAGE_DELAYLOAD_DESCRIPTOR layout
     typedef struct _DELAY_IMPORT_DESC {
         ULONG  Attributes;
         ULONG  DllNameRVA;
@@ -1111,31 +1047,18 @@ NTSTATUS PerformManualMap(
         ULONG pdataSize = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].Size;
 
         if (pdataRva && pdataSize) {
-            // RtlAddFunctionTable must run in the context of the target user process.
-            // Calling it from kernel space registers the table for the kernel — useless.
-            // We inject a small shellcode that calls RtlAddFunctionTable inside the target.
-            //
-            // x64 shellcode layout:
-            //   sub rsp, 28h
-            //   mov rcx, <pdata_va>      ; PRUNTIME_FUNCTION
-            //   mov edx, <entry_count>   ; DWORD EntryCount
-            //   mov r8,  <image_base>    ; DWORD64 BaseAddress
-            //   mov rax, <fn_addr>       ; address of ntdll!RtlAddFunctionTable
-            //   call rax
-            //   add rsp, 28h
-            //   ret
 
             static const UCHAR kRaftTemplate[] = {
-                0x48, 0x83, 0xEC, 0x28,                               // sub rsp, 28h
-                0x48, 0xB9, 0,0,0,0, 0,0,0,0,                         // mov rcx, <pdata_va>
-                0xBA, 0,0,0,0,                                         // mov edx, <count>
-                0x49, 0xB8, 0,0,0,0, 0,0,0,0,                         // mov r8, <base>
-                0x48, 0xB8, 0,0,0,0, 0,0,0,0,                         // mov rax, <fn>
-                0xFF, 0xD0,                                            // call rax
-                0x48, 0x83, 0xC4, 0x28,                               // add rsp, 28h
-                0xC3                                                   // ret
+                0x48, 0x83, 0xEC, 0x28,
+                0x48, 0xB9, 0,0,0,0, 0,0,0,0,
+                0xBA, 0,0,0,0,
+                0x49, 0xB8, 0,0,0,0, 0,0,0,0,
+                0x48, 0xB8, 0,0,0,0, 0,0,0,0,
+                0xFF, 0xD0,
+                0x48, 0x83, 0xC4, 0x28,
+                0xC3
             };
-            // patch offsets
+
             enum { OFF_PDATA = 6, OFF_COUNT = 16, OFF_BASE = 21, OFF_FN = 31 };
 
             PVOID ntdllBase = FindModuleBase(process, L"ntdll.dll");
@@ -1197,7 +1120,7 @@ NTSTATUS PerformManualMap(
         if (Flags & INJ_FLAG_STOMP_HEADERS) {
             PVOID stompBuf = ExAllocatePool2(POOL_FLAG_NON_PAGED, headerSize, DRV_POOL_TAG);
             if (stompBuf) {
-                // Fill with pseudo-random junk using a simple LFSR
+
                 ULONG lfsr = 0xDEADBEEF;
                 PULONG p = (PULONG)stompBuf;
                 for (SIZE_T i = 0; i < headerSize / sizeof(ULONG); i++) {
@@ -1295,7 +1218,7 @@ static VOID WorkerRoutine(_In_ PVOID Context)
             break;
 
         case IPC_CMD_STATUS:
-            // Usermode queries current driver state — re-affirm READY if idle
+
             if (InterlockedCompareExchange(&g_Header->Status, IPC_READY, IPC_IDLE) == IPC_IDLE)
                 InterlockedExchange(&g_Header->Status, IPC_READY);
             break;
@@ -1318,10 +1241,6 @@ static VOID WorkerRoutine(_In_ PVOID Context)
     PsTerminateSystemThread(STATUS_SUCCESS);
 }
 
-//=============================================================================
-// Driver Entry / Unload
-//=============================================================================
-
 VOID DriverUnload(_In_ PDRIVER_OBJECT DriverObject)
 {
     UNREFERENCED_PARAMETER(DriverObject);
@@ -1329,18 +1248,17 @@ VOID DriverUnload(_In_ PDRIVER_OBJECT DriverObject)
     DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
         "[drv] Unloading...\n");
 
-    // Signal worker to stop
+    PsSetCreateProcessNotifyRoutineEx(ProcessNotifyCallback, TRUE);
+
     g_Shutdown = TRUE;
 
-    // Wait for worker thread
     if (g_WorkerThread) {
         ZwWaitForSingleObject(g_WorkerThread, FALSE, NULL);
         ZwClose(g_WorkerThread);
         g_WorkerThread = NULL;
     }
 
-    // Clean up shared memory
-    DestroySharedSection();
+    DestroySharedMemory();
 
     DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
         "[drv] Unloaded successfully\n");
@@ -1357,7 +1275,6 @@ extern "C" NTSTATUS DriverEntry(
 
     DriverObject->DriverUnload = DriverUnload;
 
-    // Resolve undocumented API function pointers
     NTSTATUS status = ResolveDynamicImports();
     if (!NT_SUCCESS(status)) {
         DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
@@ -1365,15 +1282,21 @@ extern "C" NTSTATUS DriverEntry(
         return status;
     }
 
-    // Create shared memory section
-    status = CreateSharedSection();
+    status = CreateSharedMemory();
     if (!NT_SUCCESS(status)) {
         DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
-            "[drv] Failed to create shared section: 0x%08X\n", status);
+            "[drv] Failed to create shared buffer: 0x%08X\n", status);
         return status;
     }
 
-    // Create worker thread
+    status = PsSetCreateProcessNotifyRoutineEx(ProcessNotifyCallback, FALSE);
+    if (!NT_SUCCESS(status)) {
+        DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
+            "[drv] PsSetCreateProcessNotifyRoutineEx failed: 0x%08X\n", status);
+        DestroySharedMemory();
+        return status;
+    }
+
     HANDLE threadHandle = NULL;
     OBJECT_ATTRIBUTES objAttr;
     InitializeObjectAttributes(&objAttr, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
@@ -1391,14 +1314,16 @@ extern "C" NTSTATUS DriverEntry(
     if (!NT_SUCCESS(status)) {
         DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
             "[drv] Failed to create worker thread: 0x%08X\n", status);
-        DestroySharedSection();
+        PsSetCreateProcessNotifyRoutineEx(ProcessNotifyCallback, TRUE);
+        DestroySharedMemory();
         return status;
     }
 
     g_WorkerThread = threadHandle;
 
     DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
-        "[drv] Initialization complete — waiting for commands\n");
+        "[drv] Initialization complete — waiting for nanahira.exe to start\n");
 
     return STATUS_SUCCESS;
 }
+

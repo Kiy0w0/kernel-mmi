@@ -1,13 +1,9 @@
-#pragma once
+﻿#pragma once
 
 #include <windows.h>
 #include <psapi.h>
 
 #pragma comment(lib, "psapi.lib")
-
-// Inject via SetWinEventHook — shellcode runs inside target process thread context.
-// Technique from: Kernel-Manual-Map-Injector / Inject.cpp
-// The shellcode processes reloc+imports+TLS+SEH+DllMain itself (no kernel involvement needed).
 
 #pragma runtime_checks("", off)
 #pragma optimize("", off)
@@ -28,7 +24,6 @@ static void __stdcall HookShellcode()
     using fn_GetProcAddress  = FARPROC(WINAPI*)(HMODULE, const char*);
     using fn_RtlAddFuncTable = BOOL(WINAPI*)(void*, DWORD, DWORD64);
 
-    // Resolve kernel32 base via PEB walk (runs inside target process)
     auto getPEB = []() -> BYTE* {
 #ifdef _WIN64
         return (BYTE*)__readgsqword(0x60);
@@ -79,9 +74,8 @@ static void __stdcall HookShellcode()
         return nullptr;
     };
 
-    // kernel32 hash of "kernel32.dll" lowercased: k=0x6b,e,r,n,e,l,3,2,...
-    BYTE* k32  = findModule(0x6A4ABC5B); // precomputed hash for "kernel32.dll"
-    BYTE* ntdl = findModule(0x1EDE3681); // precomputed hash for "ntdll.dll"
+    BYTE* k32  = findModule(0x6A4ABC5B);
+    BYTE* ntdl = findModule(0x1EDE3681);
 
     auto _LoadLibraryA    = (fn_LoadLibraryA)   findExport(k32,  "LoadLibraryA");
     auto _GetProcAddress  = (fn_GetProcAddress)  findExport(k32,  "GetProcAddress");
@@ -89,7 +83,6 @@ static void __stdcall HookShellcode()
 
     if (!_LoadLibraryA || !_GetProcAddress) return;
 
-    // Relocations
     BYTE* Delta = pBase - (BYTE*)pOpt->ImageBase;
     if (Delta && pOpt->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size) {
         auto* reloc    = (IMAGE_BASE_RELOCATION*)(pBase + pOpt->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress);
@@ -104,7 +97,6 @@ static void __stdcall HookShellcode()
         }
     }
 
-    // Imports
     if (pOpt->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size) {
         auto* imp = (IMAGE_IMPORT_DESCRIPTOR*)(pBase + pOpt->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress);
         for (; imp->Name; imp++) {
@@ -120,7 +112,6 @@ static void __stdcall HookShellcode()
         }
     }
 
-    // TLS callbacks
     if (pOpt->DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].Size) {
         auto* tls = (IMAGE_TLS_DIRECTORY64*)(pBase + pOpt->DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS].VirtualAddress);
         auto* cb  = (PIMAGE_TLS_CALLBACK*)(tls->AddressOfCallBacks);
@@ -128,7 +119,6 @@ static void __stdcall HookShellcode()
             (*cb)(pBase, DLL_PROCESS_ATTACH, nullptr);
     }
 
-    // Exception directory
     if (_RtlAddFuncTable && pOpt->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].Size)
         _RtlAddFuncTable(
             pBase + pOpt->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].VirtualAddress,
@@ -136,7 +126,6 @@ static void __stdcall HookShellcode()
             (DWORD64)pBase
         );
 
-    // DllMain
     auto _DllMain = (BOOL(WINAPI*)(void*, DWORD, void*))(pBase + pOpt->AddressOfEntryPoint);
     _DllMain(pBase, DLL_PROCESS_ATTACH, nullptr);
 }
@@ -144,7 +133,6 @@ static void __stdcall HookShellcode()
 #pragma optimize("", on)
 #pragma runtime_checks("", restore)
 
-// Byte-scan helper
 static inline PBYTE ScanPattern(PVOID imageBase, SIZE_T imageSize, const char* pat, const char* mask)
 {
     SIZE_T mlen = strlen(mask);
@@ -159,7 +147,6 @@ static inline PBYTE ScanPattern(PVOID imageBase, SIZE_T imageSize, const char* p
     return nullptr;
 }
 
-// Measure function length (scan for 0xCCCCCCCC int3 padding)
 static inline int ScFunctionLength(void* fn)
 {
     int len = 0;
@@ -170,16 +157,15 @@ static inline int ScFunctionLength(void* fn)
 struct HookInjector {
     static bool inject(DWORD pid, const wchar_t* dllPath)
     {
-        // Get target window handle and thread id for hook
+
         HWND targetHwnd = NULL;
         EnumWindows([](HWND h, LPARAM lp) -> BOOL {
             DWORD owner;
             GetWindowThreadProcessId(h, &owner);
             if (owner == (DWORD)lp) { *(HWND*)(lp + sizeof(DWORD)) = h; return FALSE; }
             return TRUE;
-        }, (LPARAM)&pid); // pack pid+hwnd into struct would be cleaner, simplified here
+        }, (LPARAM)&pid);
 
-        // Simplified: just use pid to get thread id via snapshot
         DWORD threadId = 0;
         {
             HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
@@ -191,11 +177,9 @@ struct HookInjector {
         }
         if (!threadId) return false;
 
-        // Open target process
         HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
         if (!hProc) return false;
 
-        // Read DLL file
         HANDLE hFile = CreateFileW(dllPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
         if (hFile == INVALID_HANDLE_VALUE) { CloseHandle(hProc); return false; }
         DWORD fileSize = GetFileSize(hFile, NULL);
@@ -207,16 +191,13 @@ struct HookInjector {
         auto* dos = (IMAGE_DOS_HEADER*)fileData;
         auto* nt  = (IMAGE_NT_HEADERS64*)(fileData + dos->e_lfanew);
 
-        // Allocate memory in target (RW first, shellcode will set RX)
         BYTE* remoteBase = (BYTE*)VirtualAllocEx(hProc, NULL, nt->OptionalHeader.SizeOfImage,
                                                   MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (!remoteBase) { VirtualFree(fileData, 0, MEM_RELEASE); CloseHandle(hProc); return false; }
 
-        // Protect and write target memory RWX (needed for shellcode to patch)
         DWORD old;
         VirtualProtectEx(hProc, remoteBase, nt->OptionalHeader.SizeOfImage, PAGE_EXECUTE_READWRITE, &old);
 
-        // Write headers + sections
         WriteProcessMemory(hProc, remoteBase, fileData, nt->OptionalHeader.SizeOfHeaders, NULL);
         auto* sec = IMAGE_FIRST_SECTION(nt);
         for (int i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++) {
@@ -226,11 +207,9 @@ struct HookInjector {
         }
         VirtualFree(fileData, 0, MEM_RELEASE);
 
-        // Allocate flag + shellcode region
         BYTE* flagBase  = (BYTE*)VirtualAllocEx(hProc, NULL, sizeof(DWORD), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         BYTE* scRemote  = (BYTE*)VirtualAllocEx(hProc, NULL, 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
 
-        // Copy shellcode locally and patch sentinels
         MODULEINFO mi = {};
         GetModuleInformation(GetCurrentProcess(), GetModuleHandleA(NULL), &mi, sizeof(mi));
 
@@ -238,9 +217,8 @@ struct HookInjector {
         BYTE* scLocal = (BYTE*)VirtualAlloc(NULL, scLen, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
         memcpy(scLocal, &HookShellcode, scLen);
 
-        // Patch base sentinel (0x15846254168)
         PBYTE pBase  = ScanPattern(scLocal, scLen, "\x68\x41\x25\x46\x58\x01\x00\x00", "xxxxxx??");
-        // Patch flag sentinel (0x24856841253)
+
         PBYTE pFlag  = ScanPattern(scLocal, scLen, "\x53\x12\x84\x56\x48\x02\x00\x00", "xxxxxx??");
 
         if (!pBase || !pFlag) {
@@ -257,7 +235,6 @@ struct HookInjector {
         WriteProcessMemory(hProc, scRemote, scLocal, scLen, NULL);
         VirtualFree(scLocal, 0, MEM_RELEASE);
 
-        // Hook via WinEvent (requires ntdll loaded in target)
         HMODULE ntdll = LoadLibraryA("ntdll.dll");
         HWINEVENTHOOK hook = SetWinEventHook(
             EVENT_MIN, EVENT_MAX,
@@ -274,7 +251,6 @@ struct HookInjector {
             return false;
         }
 
-        // Poll flag until shellcode signals
         BYTE flag = 0;
         DWORD timeout = 10000;
         while (flag != 0x69 && timeout > 0) {
@@ -290,3 +266,4 @@ struct HookInjector {
         return (flag == 0x69);
     }
 };
+

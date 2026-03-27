@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #ifndef INJECTOR_H
 #define INJECTOR_H
@@ -16,20 +16,14 @@
 #include "usermode_inject.h"
 #include "hook_inject.h"
 
-// Injection mode — selectable at runtime
 typedef enum _INJECT_MODE {
-    MODE_KERNEL  = 0, // Default: kernel driver via shared memory
-    MODE_HOOK    = 1, // WinEventHook + shellcode (from KMI)
-    MODE_USERMODE = 2, // Fallback: VirtualAllocEx + WPM + CRT (from IAT)
+    MODE_KERNEL  = 0,
+    MODE_HOOK    = 1,
+    MODE_USERMODE = 2,
 } INJECT_MODE;
 
 extern INJECT_MODE g_InjectMode;
 
-//-----------------------------------------------------------------------------
-// Console colors & UI
-//-----------------------------------------------------------------------------
-
-// Enable virtual terminal (ANSI) processing
 static inline BOOL EnableAnsiConsole() {
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     DWORD mode = 0;
@@ -38,7 +32,6 @@ static inline BOOL EnableAnsiConsole() {
     return SetConsoleMode(hOut, mode);
 }
 
-// ANSI color codes
 #define CLR_RESET       "\033[0m"
 #define CLR_BOLD        "\033[1m"
 #define CLR_DIM         "\033[2m"
@@ -54,14 +47,8 @@ static inline BOOL EnableAnsiConsole() {
 #define CLR_WHITE       "\033[38;2;240;240;250m"
 #define CLR_GRAY        "\033[38;2;140;140;160m"
 
-// Background
 #define BG_DARK         "\033[48;2;15;15;25m"
 
-//-----------------------------------------------------------------------------
-// Process utilities
-//-----------------------------------------------------------------------------
-
-// Find process ID by name (case-insensitive)
 static inline DWORD FindProcessId(const char* procName)
 {
     DWORD pid = 0;
@@ -84,7 +71,6 @@ static inline DWORD FindProcessId(const char* procName)
     return pid;
 }
 
-// Check if process is still running
 static inline BOOL IsProcessRunning(DWORD pid)
 {
     HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
@@ -97,11 +83,6 @@ static inline BOOL IsProcessRunning(DWORD pid)
     return (exitCode == STILL_ACTIVE);
 }
 
-//-----------------------------------------------------------------------------
-// File utilities
-//-----------------------------------------------------------------------------
-
-// Read entire file into heap buffer
 static inline BYTE* ReadFileToBuffer(const char* path, DWORD* outSize)
 {
     HANDLE hFile = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ,
@@ -139,7 +120,6 @@ static inline BYTE* ReadFileToBuffer(const char* path, DWORD* outSize)
     return buf;
 }
 
-// Quick PE validation (check DOS + NT signature + DLL flag)
 static inline BOOL QuickValidatePE(BYTE* data, DWORD size)
 {
     if (size < sizeof(IMAGE_DOS_HEADER)) return FALSE;
@@ -157,4 +137,5 @@ static inline BOOL QuickValidatePE(BYTE* data, DWORD size)
     return TRUE;
 }
 
-#endif // INJECTOR_H
+#endif
+
