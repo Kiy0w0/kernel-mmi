@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <ntifs.h>
 #include <ntimage.h>
@@ -79,7 +79,41 @@ NTSYSAPI NTSTATUS NTAPI ZwWaitForSingleObject(
     _In_opt_ PLARGE_INTEGER Timeout
 );
 
-NTSYSAPI BOOLEAN NTAPI RtlAddFunctionTable(
+NTSYSAPI NTSTATUS NTAPI ZwOpenThread(
+    _Out_    PHANDLE            ThreadHandle,
+    _In_     ACCESS_MASK        DesiredAccess,
+    _In_     POBJECT_ATTRIBUTES ObjectAttributes,
+    _In_opt_ PCLIENT_ID         ClientId
+);
+
+NTSYSAPI NTSTATUS NTAPI ZwSuspendThread(
+    _In_      HANDLE ThreadHandle,
+    _Out_opt_ PULONG PreviousSuspendCount
+);
+
+NTSYSAPI NTSTATUS NTAPI ZwResumeThread(
+    _In_      HANDLE ThreadHandle,
+    _Out_opt_ PULONG PreviousSuspendCount
+);
+
+NTSYSAPI NTSTATUS NTAPI ZwGetThreadContext(
+    _In_  HANDLE   ThreadHandle,
+    _Out_ PCONTEXT ThreadContext
+);
+
+NTSYSAPI NTSTATUS NTAPI ZwSetThreadContext(
+    _In_ HANDLE   ThreadHandle,
+    _In_ PCONTEXT ThreadContext
+);
+
+NTSYSAPI NTSTATUS NTAPI ZwQuerySystemInformation(
+    _In_      ULONG  SystemInformationClass,
+    _Out_opt_ PVOID  SystemInformation,
+    _In_      ULONG  SystemInformationLength,
+    _Out_opt_ PULONG ReturnLength
+);
+
+NTSYSAPI NTSTATUS NTAPI RtlAddFunctionTable(
     _In_ PRUNTIME_FUNCTION FunctionTable,
     _In_ ULONG             EntryCount,
     _In_ ULONG64           BaseAddress
@@ -123,9 +157,10 @@ static __forceinline PIMAGE_SECTION_HEADER RtlFirstSection(PIMAGE_NT_HEADERS64 N
 #define INJ_FLAG_STOMP_HEADERS   0x02
 #define INJ_FLAG_SKIP_TLS        0x04
 #define INJ_FLAG_SKIP_EXCEPTIONS 0x08
+#define INJ_FLAG_THREAD_HIJACK   0x10
 
-NTSTATUS CreateSharedSection(VOID);
-VOID     DestroySharedSection(VOID);
+NTSTATUS CreateSharedMemory(VOID);
+VOID     DestroySharedMemory(VOID);
 
 NTSTATUS PerformManualMap(
     _In_ ULONG  TargetPid,

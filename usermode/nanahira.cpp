@@ -1,4 +1,4 @@
-﻿
+
 #include "nanahira.h"
 #include "discord_rpc.h"
 #include <conio.h>
@@ -385,14 +385,39 @@ int main(int argc, char* argv[])
         printf("\n");
     }
 
+    PrintInfo("Checking driver status...");
+    SHARED_HEADER* hdrCheck = ConnectToDriver();
+    if (hdrCheck && hdrCheck->Status == IPC_READY) {
+        PrintOk("Nanahira driver is loaded and ready.");
+    } else {
+        printf("\n");
+        PrintWarn("Driver not found in memory.");
+        printf("\n");
+        printf("  " CLR_YELLOW "To load the driver:\n" CLR_RESET);
+        printf("  " CLR_WHITE  "  1. Run " CLR_CYAN "load_driver.bat" CLR_WHITE " as Administrator\n" CLR_RESET);
+        printf("  " CLR_WHITE  "  2. Restart your PC when prompted\n" CLR_RESET);
+        printf("  " CLR_WHITE  "  3. Launch nanahira.exe again after reboot\n" CLR_RESET);
+        printf("\n");
+        printf("  " CLR_DIM "Kernel mode requires the driver to be\n" CLR_RESET);
+        printf("  " CLR_DIM "registered as a Boot-Start service.\n" CLR_RESET);
+        printf("\n");
+        printf("  Press any key to continue or close the window...\n");
+        _getch();
+        return 1;
+    }
+
+    printf("\n");
+
     if (argc >= 3) {
         const char* procName = argv[1];
         const char* dllPath  = argv[2];
 
+        BOOL g_UseHijack = FALSE;
         for (int i = 3; i < argc; i++) {
             if (strcmp(argv[i], xor_a("--mode=hook")) == 0)     g_InjectMode = MODE_HOOK;
             if (strcmp(argv[i], xor_a("--mode=usermode")) == 0) g_InjectMode = MODE_USERMODE;
             if (strcmp(argv[i], xor_a("--mode=kernel")) == 0)   g_InjectMode = MODE_KERNEL;
+            if (strcmp(argv[i], xor_a("--hijack")) == 0)        g_UseHijack  = TRUE;
         }
 
         if (g_InjectMode == MODE_HOOK) {
@@ -492,6 +517,10 @@ int main(int argc, char* argv[])
         hdr->TargetPid  = pid;
         hdr->PayloadSize = dllSize;
         hdr->Flags       = INJ_FLAG_ERASE_HEADERS;
+        if (g_UseHijack) {
+            hdr->Flags |= INJ_FLAG_THREAD_HIJACK;
+            PrintInfo("Thread hijack mode enabled");
+        }
         hdr->BaseAddr    = 0;
         InterlockedExchange(&hdr->Progress, 0);
         free(dllData);
