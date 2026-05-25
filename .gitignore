@@ -35,3 +35,11 @@ Desktop.ini
 
 # Dev tools
 tools/fmt.ps1
+
+# Local Testing Files (Excluded from push)
+test_dll.cpp
+test_dll.dll
+build_test_dll.bat
+*.cer
+*.key
+

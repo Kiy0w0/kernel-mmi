@@ -1,13 +1,13 @@
-﻿#pragma once
+#pragma once
 
 #ifndef SHARED_PROTOCOL_H
 #define SHARED_PROTOCOL_H
 
 #define INJECTOR_PROCESS_NAME   L"nanahira.exe"
 
-#define PROTO_MAGIC             0x4D505348
+#define PROTO_MAGIC             0xB3F1A7C9
 
-#define DRV_POOL_TAG            'pMhS'
+#define DRV_POOL_TAG            'xGqR'
 
 #define SHM_TOTAL_SIZE          (16 * 1024 * 1024)
 
@@ -15,7 +15,7 @@
 
 #define POLL_TIMEOUT_MS         10000
 
-#define PROTO_VER_MAJOR         1
+#define PROTO_VER_MAJOR         2
 #define PROTO_VER_MINOR         0
 
 typedef enum _IPC_COMMAND {
@@ -74,6 +74,12 @@ static_assert(sizeof(SHARED_HEADER) == 256, "Header must be 256 bytes");
 #endif
 
 #define PAYLOAD_DATA_OFFSET     sizeof(SHARED_HEADER)
+
+#define INJ_FLAG_ERASE_HEADERS   0x01
+#define INJ_FLAG_STOMP_HEADERS   0x02
+#define INJ_FLAG_SKIP_TLS        0x04
+#define INJ_FLAG_SKIP_EXCEPTIONS 0x08
+#define INJ_FLAG_THREAD_HIJACK   0x10
 
 #endif
 

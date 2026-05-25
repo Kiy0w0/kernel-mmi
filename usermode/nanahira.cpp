@@ -96,14 +96,22 @@ static SHARED_HEADER* ConnectToDriver(void) {
         MEMORY_BASIC_INFORMATION mbi = {};
         if (!VirtualQuery(addr, &mbi, sizeof(mbi))) break;
 
-        if (mbi.State == MEM_COMMIT &&
-            mbi.RegionSize >= sizeof(SHARED_HEADER) &&
-            (mbi.Protect == PAGE_READWRITE || mbi.Protect == PAGE_READWRITE | PAGE_NOCACHE)) {
+        BOOL protectOk = (mbi.Protect & PAGE_READWRITE) &&
+                         !(mbi.Protect & PAGE_NOACCESS) &&
+                         !(mbi.Protect & PAGE_GUARD);
+
+        if (mbi.State == MEM_COMMIT                  &&
+            protectOk                                &&
+            mbi.RegionSize >= (SIZE_T)SHM_TOTAL_SIZE) {
 
             __try {
                 volatile SHARED_HEADER* hdr = (volatile SHARED_HEADER*)mbi.BaseAddress;
+                LONG st = hdr->Status;
+                BOOLEAN statusOk = (st == IPC_IDLE || st == IPC_READY ||
+                                    st == IPC_BUSY  || st == IPC_DONE);
                 if (hdr->Magic   == PROTO_MAGIC &&
-                    hdr->Version == ((PROTO_VER_MAJOR << 16) | PROTO_VER_MINOR)) {
+                    hdr->Version == ((PROTO_VER_MAJOR << 16) | PROTO_VER_MINOR) &&
+                    statusOk) {
                     return (SHARED_HEADER*)mbi.BaseAddress;
                 }
             }
@@ -555,7 +563,6 @@ int main(int argc, char* argv[])
         _getch();
         Discord_Shutdown();
         return 0;
-    }
     } else {
         Discord_UpdatePresence(xor_a("Waiting for input"), xor_a("Nanahira Kernel Injector"), xor_a("nanahira"), xor_a("Kernel Manual Map Injector"), xor_a("kiy0w0"), xor_a("by kiy0w0"));
         InteractiveMode();

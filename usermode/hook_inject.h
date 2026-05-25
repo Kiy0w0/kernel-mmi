@@ -1,9 +1,18 @@
-﻿#pragma once
+#pragma once
 
 #include <windows.h>
 #include <psapi.h>
 
 #pragma comment(lib, "psapi.lib")
+
+#ifndef _UNICODE_STRING_DEFINED
+#define _UNICODE_STRING_DEFINED
+typedef struct _UNICODE_STRING {
+    USHORT Length;
+    USHORT MaximumLength;
+    PWSTR  Buffer;
+} UNICODE_STRING, *PUNICODE_STRING;
+#endif
 
 #pragma runtime_checks("", off)
 #pragma optimize("", off)
@@ -83,7 +92,7 @@ static void __stdcall HookShellcode()
 
     if (!_LoadLibraryA || !_GetProcAddress) return;
 
-    BYTE* Delta = pBase - (BYTE*)pOpt->ImageBase;
+    ptrdiff_t Delta = pBase - (BYTE*)(uintptr_t)pOpt->ImageBase;
     if (Delta && pOpt->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size) {
         auto* reloc    = (IMAGE_BASE_RELOCATION*)(pBase + pOpt->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress);
         auto* relocEnd = (IMAGE_BASE_RELOCATION*)((uintptr_t)reloc + pOpt->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size);
@@ -150,21 +159,14 @@ static inline PBYTE ScanPattern(PVOID imageBase, SIZE_T imageSize, const char* p
 static inline int ScFunctionLength(void* fn)
 {
     int len = 0;
-    while (*(UINT32*)((BYTE*)fn + len) != 0xCCCCCCCC) len++;
+    const int kMaxLen = 0x1000;
+    while (len < kMaxLen && *(UINT32*)((BYTE*)fn + len) != 0xCCCCCCCC) len++;
     return len;
 }
 
 struct HookInjector {
     static bool inject(DWORD pid, const wchar_t* dllPath)
     {
-
-        HWND targetHwnd = NULL;
-        EnumWindows([](HWND h, LPARAM lp) -> BOOL {
-            DWORD owner;
-            GetWindowThreadProcessId(h, &owner);
-            if (owner == (DWORD)lp) { *(HWND*)(lp + sizeof(DWORD)) = h; return FALSE; }
-            return TRUE;
-        }, (LPARAM)&pid);
 
         DWORD threadId = 0;
         {

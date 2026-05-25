@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <windows.h>
 #include <tlhelp32.h>
@@ -9,6 +9,9 @@
 struct UserModeMapParams {
     uintptr_t base;
     uintptr_t flag_addr;
+    uintptr_t fnLoadLibraryA;
+    uintptr_t fnGetProcAddress;
+    uintptr_t fnRtlAddFunctionTable;
 };
 
 static void __stdcall UserModeShellcode(UserModeMapParams* p)
@@ -23,18 +26,17 @@ static void __stdcall UserModeShellcode(UserModeMapParams* p)
     auto* pNt   = (IMAGE_NT_HEADERS64*)(pBase + pDos->e_lfanew);
     auto* pOpt  = &pNt->OptionalHeader;
 
-    auto _LoadLibraryA   = (fn_LoadLibraryA)  p->flag_addr;
-    auto _GetProcAddress = (fn_GetProcAddress)(p->flag_addr);
-    auto _RtlAddFuncTable= (fn_RtlAddFuncTable)(p->flag_addr);
+    auto _LoadLibraryA    = (fn_LoadLibraryA)   p->fnLoadLibraryA;
+    auto _GetProcAddress  = (fn_GetProcAddress)  p->fnGetProcAddress;
+    auto _RtlAddFuncTable = (fn_RtlAddFuncTable) p->fnRtlAddFunctionTable;
 
-    BYTE* Delta = pBase - pOpt->ImageBase;
+    ptrdiff_t Delta = (ptrdiff_t)((uintptr_t)pBase - pOpt->ImageBase);
     if (Delta && pOpt->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size) {
         auto* reloc    = (IMAGE_BASE_RELOCATION*)(pBase + pOpt->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress);
         auto* relocEnd = (IMAGE_BASE_RELOCATION*)((uintptr_t)reloc + pOpt->DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size);
-
         while (reloc < relocEnd && reloc->SizeOfBlock) {
-            UINT  count  = (reloc->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(WORD);
-            WORD* entry  = (WORD*)(reloc + 1);
+            UINT  count = (reloc->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) / sizeof(WORD);
+            WORD* entry = (WORD*)(reloc + 1);
             for (UINT i = 0; i < count; i++, entry++) {
                 if ((*entry >> 0xC) == IMAGE_REL_BASED_DIR64)
                     *(uintptr_t*)(pBase + reloc->VirtualAddress + (*entry & 0xFFF)) += (uintptr_t)Delta;
@@ -43,12 +45,12 @@ static void __stdcall UserModeShellcode(UserModeMapParams* p)
         }
     }
 
-    if (pOpt->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size) {
+    if (_LoadLibraryA && _GetProcAddress && pOpt->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size) {
         auto* imp = (IMAGE_IMPORT_DESCRIPTOR*)(pBase + pOpt->DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress);
         for (; imp->Name; imp++) {
             HMODULE hMod = _LoadLibraryA((char*)(pBase + imp->Name));
-            auto* orig = (uintptr_t*)(pBase + (imp->OriginalFirstThunk ? imp->OriginalFirstThunk : imp->FirstThunk));
-            auto* iat  = (uintptr_t*)(pBase + imp->FirstThunk);
+            auto* orig   = (uintptr_t*)(pBase + (imp->OriginalFirstThunk ? imp->OriginalFirstThunk : imp->FirstThunk));
+            auto* iat    = (uintptr_t*)(pBase + imp->FirstThunk);
             for (; *orig; orig++, iat++) {
                 if (IMAGE_SNAP_BY_ORDINAL(*orig))
                     *iat = (uintptr_t)_GetProcAddress(hMod, (char*)(*orig & 0xFFFF));
@@ -65,7 +67,7 @@ static void __stdcall UserModeShellcode(UserModeMapParams* p)
             (*cb)(pBase, DLL_PROCESS_ATTACH, nullptr);
     }
 
-    if (pOpt->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].Size)
+    if (_RtlAddFuncTable && pOpt->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].Size)
         _RtlAddFuncTable(
             pBase + pOpt->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].VirtualAddress,
             pOpt->DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION].Size / sizeof(IMAGE_RUNTIME_FUNCTION_ENTRY),
@@ -111,40 +113,57 @@ struct UmInjector {
                 WriteProcessMemory(hProc, remoteBase + sec->VirtualAddress,
                                    fileData + sec->PointerToRawData, sec->SizeOfRawData, NULL);
         }
-
         VirtualFree(fileData, 0, MEM_RELEASE);
 
-        SIZE_T scSize = 0x2000;
-        BYTE* scBase  = (BYTE*)VirtualAllocEx(hProc, NULL, scSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        SIZE_T scSize  = 0x2000;
+        BYTE* scBase   = (BYTE*)VirtualAllocEx(hProc, NULL, scSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        BYTE* flagBase = (BYTE*)VirtualAllocEx(hProc, NULL, sizeof(BYTE), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 
-        BYTE* flagBase = (BYTE*)VirtualAllocEx(hProc, NULL, sizeof(DWORD), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (!scBase || !flagBase) {
+            if (scBase)   VirtualFreeEx(hProc, scBase,    0, MEM_RELEASE);
+            if (flagBase) VirtualFreeEx(hProc, flagBase,  0, MEM_RELEASE);
+            VirtualFreeEx(hProc, remoteBase, 0, MEM_RELEASE);
+            CloseHandle(hProc);
+            return false;
+        }
 
-        UserModeMapParams params = { (uintptr_t)remoteBase, (uintptr_t)flagBase };
-        WriteProcessMemory(hProc, scBase, (BYTE*)&params, sizeof(params), NULL);
+        UserModeMapParams params = {
+            (uintptr_t)remoteBase,
+            (uintptr_t)flagBase,
+            (uintptr_t)GetProcAddress(GetModuleHandleA("kernel32.dll"), "LoadLibraryA"),
+            (uintptr_t)GetProcAddress(GetModuleHandleA("kernel32.dll"), "GetProcAddress"),
+            (uintptr_t)GetProcAddress(GetModuleHandleA("ntdll.dll"),    "RtlAddFunctionTable")
+        };
+
+        WriteProcessMemory(hProc, scBase, &params, sizeof(params), NULL);
         WriteProcessMemory(hProc, scBase + sizeof(params), (BYTE*)&UserModeShellcode,
                            scSize - sizeof(params), NULL);
 
-        DWORD old;
-        VirtualProtectEx(hProc, remoteBase, nt->OptionalHeader.SizeOfImage, PAGE_EXECUTE_READ, &old);
-
         HANDLE hThread = CreateRemoteThread(hProc, NULL, 0,
             (LPTHREAD_START_ROUTINE)(scBase + sizeof(params)), scBase, 0, NULL);
-        if (!hThread) { CloseHandle(hProc); return false; }
 
-        while (true) {
-            BYTE flag = 0;
+        if (!hThread) {
+            VirtualFreeEx(hProc, scBase,    0, MEM_RELEASE);
+            VirtualFreeEx(hProc, flagBase,  0, MEM_RELEASE);
+            VirtualFreeEx(hProc, remoteBase, 0, MEM_RELEASE);
+            CloseHandle(hProc);
+            return false;
+        }
+
+        BYTE  flag    = 0;
+        DWORD timeout = 5000;
+        while (flag != 0x69 && timeout > 0) {
             ReadProcessMemory(hProc, flagBase, &flag, 1, NULL);
-            if (flag == 0x69) break;
             Sleep(10);
+            timeout -= 10;
         }
 
         WaitForSingleObject(hThread, 3000);
         CloseHandle(hThread);
 
-        VirtualFreeEx(hProc, scBase, 0, MEM_RELEASE);
+        VirtualFreeEx(hProc, scBase,   0, MEM_RELEASE);
         VirtualFreeEx(hProc, flagBase, 0, MEM_RELEASE);
         CloseHandle(hProc);
-        return true;
+        return (flag == 0x69);
     }
 };
-

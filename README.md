@@ -1,5 +1,6 @@
 <p align="center">
   <img src="https://img.shields.io/badge/ENGINE-KERNEL%20MANUAL%20MAP-a855f7?style=for-the-badge&labelColor=0d1117" />
+  <img src="https://img.shields.io/badge/VERSION-2.0.0-22c55e?style=for-the-badge&labelColor=0d1117" />
   <img src="https://img.shields.io/badge/ARCH-x64%20Ring--0-3b82f6?style=for-the-badge&labelColor=0d1117" />
   <img src="https://img.shields.io/badge/SIGNATURES-RANDOMIZED-f97316?style=for-the-badge&labelColor=0d1117" />
   <img src="https://img.shields.io/badge/OS-Windows%2010%2F11-0ea5e9?style=for-the-badge&labelColor=0d1117" />
@@ -178,6 +179,9 @@ kdmapper.exe output\driver.sys
 :: Default kernel mode
 output\nanahira.exe target.exe C:\path\to\dll.dll
 
+:: Thread hijack execution (no new thread — avoids CreateThread callbacks)
+output\nanahira.exe target.exe C:\path\to\dll.dll --hijack
+
 :: WinEventHook mode (no CreateRemoteThread)
 output\nanahira.exe target.exe C:\path\to\dll.dll --mode=hook
 
@@ -213,6 +217,7 @@ Per-injection behavior can be controlled via flags set in `shared/protocol.h`:
 | `INJ_FLAG_STOMP_HEADERS` | Overwrite headers with LFSR junk instead of zeros |
 | `INJ_FLAG_SKIP_TLS` | Skip TLS callback execution |
 | `INJ_FLAG_SKIP_EXCEPTIONS` | Skip `RtlAddFunctionTable` call |
+| `INJ_FLAG_THREAD_HIJACK` | Hijack an existing thread to call `DllMain` — no `RtlCreateUserThread` |
 
 ---
 
@@ -281,6 +286,20 @@ Every run produces binaries with a different SHA256 hash.
 | Target crashes | Check Event Viewer for `0xC0000005` DLL access violation |
 
 </details>
+
+---
+
+## Changelog
+
+### v2.0.0
+- Thread hijack execution path — hijacks an existing thread to call `DllMain`, avoids `RtlCreateUserThread` entirely (`--hijack` flag)
+- Forwarded export resolution — chains like `ntdll.RtlXxx → ntdllp.RtlXxx` are followed correctly
+- Delay-load import support — `IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT` resolved at inject time
+- Exception directory registration via in-process `RtlAddFunctionTable` shellcode — C++ exceptions work inside injected DLLs
+- IPC shared memory scan hardened — `ConnectToDriver` now works correctly across all Windows 10/11 builds
+
+### v1.0.0
+- Initial release
 
 ---
 

@@ -37,7 +37,7 @@ if %errorLevel% == 0 (
     echo  [*] Removing existing service entry...
     sc stop  %DRIVER_NAME% >nul 2>&1
     sc delete %DRIVER_NAME% >nul 2>&1
-    timeout /t 1 /nobreak >nul
+    timeout /t 2 /nobreak >nul
 )
 
 echo  [*] Checking test signing status...
@@ -58,11 +58,27 @@ if not %errorLevel% == 0 (
     echo.
 )
 
-echo  [*] Registering driver as Boot-Start service...
-sc create %DRIVER_NAME% binPath= "%DRIVER_PATH%" type= kernel start= boot DisplayName= "Nanahira Driver" >nul 2>&1
+set SYS_DRIVER_PATH=%SystemRoot%\System32\drivers\%DRIVER_NAME%.sys
 
-if not %errorLevel% == 0 (
-    echo  [x] Failed to register driver. Error: %errorLevel%
+echo  [*] Copying driver to System32\drivers...
+copy /Y "%DRIVER_PATH%" "%SYS_DRIVER_PATH%" >nul 2>&1
+if not %errorlevel% == 0 (
+    echo  [x] Failed to copy driver to %SYS_DRIVER_PATH%
+    echo      Make sure you are running as Administrator.
+    echo.
+    pause
+    exit /b 1
+)
+echo  [+] Driver copied to: %SYS_DRIVER_PATH%
+
+echo  [*] Registering driver as Boot-Start service...
+sc create %DRIVER_NAME% binPath= "%SYS_DRIVER_PATH%" type= kernel start= boot error= normal > "%TEMP%\sc_out.txt" 2>&1
+set SC_ERR=%errorlevel%
+
+if not %SC_ERR% == 0 (
+    echo  [x] Failed to register driver. Error: %SC_ERR%
+    type "%TEMP%\sc_out.txt"
+    echo.
     echo      Make sure you are running as Administrator and driver.sys exists.
     echo.
     pause

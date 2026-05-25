@@ -29,8 +29,8 @@ template <> struct ConstructIndexList<0> {
     typedef IndexList<> Result;
 };
 
-const char    XORKEY_A = static_cast<char>(0x13);
-const wchar_t XORKEY_W = static_cast<wchar_t>(0x133);
+inline constexpr char    XORKEY_A = static_cast<char>(0x13);
+inline constexpr wchar_t XORKEY_W = static_cast<wchar_t>(0x133);
 
 __declspec(noinline) constexpr char EncryptCharA(const char c, int i) {
     return c ^ (XORKEY_A + i);
