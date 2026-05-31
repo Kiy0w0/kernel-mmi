@@ -1,6 +1,6 @@
 <p align="center">
   <img src="https://img.shields.io/badge/ENGINE-KERNEL%20MANUAL%20MAP-a855f7?style=for-the-badge&labelColor=0d1117" />
-  <img src="https://img.shields.io/badge/VERSION-2.0.0-22c55e?style=for-the-badge&labelColor=0d1117" />
+  <img src="https://img.shields.io/badge/VERSION-3.0.0-22c55e?style=for-the-badge&labelColor=0d1117" />
   <img src="https://img.shields.io/badge/ARCH-x64%20Ring--0-3b82f6?style=for-the-badge&labelColor=0d1117" />
   <img src="https://img.shields.io/badge/SIGNATURES-RANDOMIZED-f97316?style=for-the-badge&labelColor=0d1117" />
   <img src="https://img.shields.io/badge/OS-Windows%2010%2F11-0ea5e9?style=for-the-badge&labelColor=0d1117" />
@@ -59,7 +59,7 @@ Three injection modes are available depending on your situation:
                                              Call DllMain
 ```
 
-The IPC channel between usermode and the kernel driver uses an **anonymous MDL-mapped buffer** — no named section objects, no visible handles in the global namespace. The driver auto-maps the buffer into `nanahira.exe` via a process notify callback when the injector starts.
+The IPC channel between usermode and the kernel driver uses an **anonymous MDL-mapped buffer** no named section objects, no visible handles in the global namespace. The driver auto-maps the buffer into `nanahira.exe` via a process notify callback when the injector starts.
 
 ---
 
@@ -67,22 +67,31 @@ The IPC channel between usermode and the kernel driver uses an **anonymous MDL-m
 
 | Feature | Details |
 |:---|:---|
-| **Full kernel manual map** | PE ops in ring 0 — no usermode injection APIs |
-| **Thread hijacking execution** | Hijacks an existing game thread instead of creating a new one — avoids `CreateThread` callbacks monitored by Anti-Cheat |
-| **Import by name + ordinal** | Both forms handled — previously ordinal imports were skipped |
+| **Ghost Driver** | Unlinks `PsLoadedModuleList` immediately after boot to hide driver from system module enumerators |
+| **Self-Erase Header** | Zero-out driver MZ/PE headers from memory inside `DriverEntry` |
+| **W^X Execution (No RWX)** | `PAGE_READWRITE` → `PAGE_EXECUTE_READ` promotion in all three injection modes — kernel, hook, and usermode — eliminates RWX pages entirely |
+| **Full kernel manual map** | PE ops in ring 0 no usermode injection APIs |
+| **Thread hijacking execution** | Hijacks an existing game thread instead of creating a new one avoids `CreateThread` callbacks monitored by Anti-Cheat |
+| **Import by name + ordinal** | Both forms handled previously ordinal imports were skipped |
 | **Delay-load import support** | `IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT` resolved at inject time |
 | **Forwarded export resolution** | Chains like `ntdll.RtlXxx → ntdllp.RtlXxx` are followed |
 | **TLS callback execution** | Callbacks run before DllMain, as the loader would |
 | **Exception directory (.pdata)** | `RtlAddFunctionTable` called in-process so C++ exceptions / SEH work inside injected DLL |
-| **Header erase / stomp** | Zero or LFSR-junk overwrite — controlled per-inject via flags |
-| **Stealth IPC** | Anonymous MDL-mapped buffer — no named kernel objects visible to scanners |
+| **Header erase / stomp** | Zero or LFSR-junk overwrite controlled per-inject via flags |
+| **Section name scrubbing** | `.text`, `.rdata` etc. unconditionally zeroed in target after mapping |
+| **KEVENT injection mutex** | Prevents concurrent inject races second inject waits up to 5 s before failing |
+| **PE deep validator** | Checks `SizeOfImage` bounds and all section `PointerToRawData` offsets before mapping |
+| **Worker SEH recovery** | `__try/__except` around worker loop AV in ring-0 resets state instead of BSOD |
+| **Stealth IPC** | Anonymous MDL-mapped buffer no named kernel objects visible to scanners |
 | **WinEventHook injection** | Alternative entry via `SetWinEventHook` + self-contained shellcode |
-| **Usermode fallback** | Works without driver — full PE shellcode runs inside target |
+| **Usermode fallback** | Works without driver full PE shellcode runs inside target |
 | **Compile-time XOR strings** | Sensitive literals encrypted at compile time via template metaprogramming |
 | **Signature randomization** | Source-level identifier mutation + binary PE mutations every build |
-| **Discord Rich Presence** | Status updates while injecting |
-| **Gradient console UI** | 24-bit ANSI color, live progress bar |
-
+| **Settings panel (GUI)** | ⚙ button in title bar with Always On Top, GitHub, and Patreon links |
+| **VAD node hiding** | Zeroes `StartingVpn` / `EndingVpn` in the target process VAD tree after injection so the region is invisible to `NtQueryVirtualMemory` scanners |
+| **Per-section protection** | Hook and usermode modes apply correct per-section page protections after shellcode execution instead of leaving the whole image RWX |
+| **`NtCreateThreadEx` hidden thread** | Usermode mode replaces `CreateRemoteThread` with `NtCreateThreadEx` + `THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER` to bypass thread-creation callbacks |
+| **Randomized LFSR seed** | Header stomp junk seed derived from `KeQueryPerformanceCounter` XOR `allocBase` — unique per inject, no static fingerprint |
 ---
 
 ## Project Structure
@@ -95,7 +104,8 @@ kernel-mmi/
 │
 ├── driver/
 │   ├── driver.cpp          Manual map engine
-│   └── driver.h            Internal declarations + dynamic import typedefs
+│   ├── driver.h            Internal declarations + dynamic import typedefs
+│   └── offsets.h           Dynamically generated Windows build offsets (PDB parser output)
 │
 ├── usermode/
 │   ├── nanahira.cpp        Injector UI + IPC client
@@ -106,6 +116,11 @@ kernel-mmi/
 │   ├── lazy_importer.h     PEB-walk API resolution (LI_FN)
 │   ├── discord_rpc.cpp     Discord Rich Presence over named pipe
 │   └── discord_rpc.h
+│
+├── tools/
+│   ├── pdb-parser/              Rust-based Windows Kernel PDB offset parsing tool
+│   ├── signature_randomizer.ps1 PE binary mutation script
+│   └── source_randomizer.ps1   Identifier randomization script
 │
 └── shared/
     └── protocol.h          Shared memory layout + IPC commands + flags
@@ -121,103 +136,14 @@ kernel-mmi/
 | Administrator | Everything needs elevation |
 | Visual Studio 2022 | Desktop development with C++ workload |
 | Windows Driver Kit | Match your Windows SDK version |
+| Rust & Cargo | Installed on build system (required for pdb-parser) |
 | PowerShell 7+ | Required for signature randomization scripts |
 
 ---
 
 ## Usage
 
-### Order of Operations
-
-```
-  1. Build  →  2. Load driver  →  3. Start target  →  4. Inject
-```
-
-### 1. Build
-
-```batch
-build_release.bat
-```
-
-Runs source mutation, compiles both projects, restores source, then applies 10 binary PE mutations. Output goes to `output/`.
-
-Or build manually in VS2022 `Release | x64`, then run `quick_spoof.bat` for PE mutations.
-
-### 2. Load the Driver
-
-**Test signing (recommended):**
-
-```batch
-:: One-time setup run as admin, then reboot
-bcdedit /set testsigning on
-bcdedit /set nointegritychecks on
-```
-
-```powershell
-# Self-sign the driver
-$cert = New-SelfSignedCertificate -Subject "CN=Nanahira" -Type CodeSigningCert -CertStoreLocation "Cert:\LocalMachine\My"
-$store = New-Object System.Security.Cryptography.X509Certificates.X509Store("Root","LocalMachine")
-$store.Open("ReadWrite"); $store.Add($cert); $store.Close()
-$store = New-Object System.Security.Cryptography.X509Certificates.X509Store("TrustedPublisher","LocalMachine")
-$store.Open("ReadWrite"); $store.Add($cert); $store.Close()
-Set-AuthenticodeSignature -FilePath "output\driver.sys" -Certificate $cert
-```
-
-```batch
-sc create nanahira type= kernel binPath= "C:\path\to\output\driver.sys"
-sc start nanahira
-```
-
-**kdmapper:**
-```batch
-kdmapper.exe output\driver.sys
-```
-
-### 3. Inject
-
-```batch
-:: Default kernel mode
-output\nanahira.exe target.exe C:\path\to\dll.dll
-
-:: Thread hijack execution (no new thread — avoids CreateThread callbacks)
-output\nanahira.exe target.exe C:\path\to\dll.dll --hijack
-
-:: WinEventHook mode (no CreateRemoteThread)
-output\nanahira.exe target.exe C:\path\to\dll.dll --mode=hook
-
-:: Usermode fallback (no driver needed)
-output\nanahira.exe target.exe C:\path\to\dll.dll --mode=usermode
-
-:: Interactive (prompts for process + DLL + mode)
-output\nanahira.exe
-```
-
-### 4. Re-spoof Binaries
-
-```batch
-quick_spoof.bat
-```
-
-Applies fresh PE mutations without recompiling. Re-sign `driver.sys` after.
-
-### Unload Driver
-
-```batch
-sc stop nanahira
-sc delete nanahira
-```
-
-### Injection Flags
-
-Per-injection behavior can be controlled via flags set in `shared/protocol.h`:
-
-| Flag | Effect |
-|:---|:---|
-| `INJ_FLAG_ERASE_HEADERS` | Zero out PE headers in target after mapping |
-| `INJ_FLAG_STOMP_HEADERS` | Overwrite headers with LFSR junk instead of zeros |
-| `INJ_FLAG_SKIP_TLS` | Skip TLS callback execution |
-| `INJ_FLAG_SKIP_EXCEPTIONS` | Skip `RtlAddFunctionTable` call |
-| `INJ_FLAG_THREAD_HIJACK` | Hijack an existing thread to call `DllMain` — no `RtlCreateUserThread` |
+See [tutorial.md](tutorial.md) for full instructions on building, loading the driver, and running the injector.
 
 ---
 
@@ -270,7 +196,7 @@ Every run produces binaries with a different SHA256 hash.
 | `StartService FAILED 577` | Driver unsigned enable test signing + self-sign |
 | `Value protected by Secure Boot` | Disable Secure Boot in BIOS first |
 | `Memory Integrity blocking` | Windows Security → Core Isolation → Memory integrity → Off |
-| BSOD with kdmapper | Use test signing method instead |
+| BSOD on first run | Use test signing with `bcdedit /set testsigning on` and sign driver manually |
 
 </details>
 
@@ -291,15 +217,16 @@ Every run produces binaries with a different SHA256 hash.
 
 ## Changelog
 
-### v2.0.0
-- Thread hijack execution path — hijacks an existing thread to call `DllMain`, avoids `RtlCreateUserThread` entirely (`--hijack` flag)
-- Forwarded export resolution — chains like `ntdll.RtlXxx → ntdllp.RtlXxx` are followed correctly
-- Delay-load import support — `IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT` resolved at inject time
-- Exception directory registration via in-process `RtlAddFunctionTable` shellcode — C++ exceptions work inside injected DLLs
-- IPC shared memory scan hardened — `ConnectToDriver` now works correctly across all Windows 10/11 builds
-
-### v1.0.0
-- Initial release
+### v3.0.0
+- **KEVENT Injection Mutex** Driver uses a `KEVENT` (SynchronizationEvent) so only one injection runs at a time — prevents race conditions and shared memory corruption.
+- **Enhanced PE Validator** Validates `SizeOfImage` (max 256 MB) and all section `PointerToRawData` offsets before mapping begins, preventing BSOD from malformed DLLs.
+- **Worker Thread SEH Recovery** `__try/__except` wraps the worker switch — an access violation in ring-0 resets state to `IPC_READY` and releases the mutex instead of crashing the kernel.
+- **Unconditional Section Name Scrubbing** Section names (`.text`, `.rdata`, etc.) zeroed in target memory after mapping without requiring any flag.
+- **PDB Offset Parser** Rust-based build-time symbol parser downloads `ntoskrnl.pdb` from Microsoft symbol servers and auto-generates `offsets.h` to prevent update-induced BSODs.
+- **VAD Node Hiding** After injection, `StartingVpn` / `EndingVpn` are zeroed in the target process VAD tree — the allocated region becomes invisible to `NtQueryVirtualMemory`-based scanners.
+- **Full W^X Across All Modes** Hook and usermode injection modes now allocate `PAGE_READWRITE`, write shellcode, promote to `PAGE_EXECUTE_READ`, then apply correct per-section protections after execution — no RWX pages at any point.
+- **`NtCreateThreadEx` Hidden Thread** Usermode mode replaces `CreateRemoteThread` with `NtCreateThreadEx` + `THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER`, bypassing thread-creation callbacks monitored by anti-cheat.
+- **Randomized LFSR Stomp Seed** Header stomp junk seed is now derived from `KeQueryPerformanceCounter` XOR `allocBase` per inject — eliminates static binary fingerprint from header stomping.
 
 ---
 
