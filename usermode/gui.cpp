@@ -704,7 +704,7 @@ void NanahiraGUI::DoInject() {
     m_injecting    = true;
 
     char state[128];
-    snprintf(state, sizeof(state), "Injecting \u2192 %s",
+    snprintf(state, sizeof(state), "Injecting -> %s",
         m_processes[m_selectedProc].name.c_str());
     UpdateDiscordRpc(state);
 }
@@ -757,7 +757,7 @@ void NanahiraGUI::PollInject() {
         AddToast("Injection successful!", 34/255.f, 197/255.f, 94/255.f);
         InterlockedExchange(&hdr->Command, IPC_CMD_NONE);
         char state[128];
-        snprintf(state, sizeof(state), "Injected \u2192 %s  [%d\u00D7]",
+        snprintf(state, sizeof(state), "Injected -> %s  [%dx]",
             m_processes[m_selectedProc >= 0 ? m_selectedProc : 0].name.c_str(), m_injectCount);
         UpdateDiscordRpc(state);
         return;

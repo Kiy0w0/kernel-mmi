@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <tlhelp32.h>
+#include <intrin.h>
 
 #pragma runtime_checks("", off)
 #pragma optimize("", off)

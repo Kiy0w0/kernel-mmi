@@ -23,6 +23,13 @@ public:
     void Shutdown();
     void OnResize(UINT w, UINT h);
 
+    struct AltInjectJob {
+        int          mode;
+        DWORD        pid;
+        std::wstring path;
+        bool         result;
+    };
+
 private:
     HWND    m_hwnd    = nullptr;
     bool    m_running = true;
@@ -65,12 +72,6 @@ private:
     bool        m_injecting        = false;
     DWORD       m_injectDeadline   = 0;
 
-    struct AltInjectJob {
-        int          mode;
-        DWORD        pid;
-        std::wstring path;
-        bool         result;
-    };
     HANDLE        m_altThread = nullptr;
     AltInjectJob* m_altJob    = nullptr;
 

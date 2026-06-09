@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <tlhelp32.h>
+#include <intrin.h>
 
 #ifndef _UNICODE_STRING_DEFINED
 #define _UNICODE_STRING_DEFINED
