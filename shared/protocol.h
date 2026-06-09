@@ -15,7 +15,7 @@
 
 #define POLL_TIMEOUT_MS         10000
 
-#define PROTO_VER_MAJOR         2
+#define PROTO_VER_MAJOR         3
 #define PROTO_VER_MINOR         0
 
 typedef enum _IPC_COMMAND {

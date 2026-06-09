@@ -1,7 +1,10 @@
 
 #include "nanahira.h"
 #include "discord_rpc.h"
+#include "gui.h"
 #include <conio.h>
+
+#pragma comment(lib, "advapi32.lib")
 
 #define DISCORD_APP_ID "1472658353913204737"
 
@@ -40,7 +43,7 @@ static void PrintBanner(void) {
 
     printf("  " CLR_DIM "by kiy0w0" CLR_RESET "\n");
     printf("  " CLR_DIM "v%d.%d.%d" CLR_RESET "\n", PROTO_VER_MAJOR, PROTO_VER_MINOR, 0);
-    printf("  " CLR_DIM "https://github.com/Kiy0w0/kernel-mmi" CLR_RESET "\n");
+    printf("  " CLR_DIM "https://github.com/kiy0w0/kernel-mmi" CLR_RESET "\n");
     printf("\n");
 
     printf("  " CLR_PURPLE);
@@ -84,7 +87,7 @@ static void DrawProgressBar(int pct, const char* label) {
     fflush(stdout);
 }
 
-static SHARED_HEADER* ConnectToDriver(void) {
+SHARED_HEADER* ConnectToDriver(void) {
 
     SYSTEM_INFO si;
     GetSystemInfo(&si);
@@ -354,12 +357,25 @@ static void InteractiveMode(void) {
 
 int main(int argc, char* argv[])
 {
+    bool consoleMode = false;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--console") == 0) consoleMode = true;
+    }
+
+    if (!consoleMode) {
+        FreeConsole();
+        Discord_Init(DISCORD_APP_ID);
+        Discord_UpdatePresence("Idle", "Nanahira Kernel Injector", "nanahira", "Kernel Manual Map Injector", "kiy0w0", "by kiy0w0");
+        NanahiraGUI gui;
+        if (gui.Initialize()) gui.Run();
+        Discord_Shutdown();
+        gui.Shutdown();
+        return 0;
+    }
 
     SetConsoleTitleA("nanahira — Kernel Manual Map Injector");
-
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
-
     EnableAnsiConsole();
 
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);

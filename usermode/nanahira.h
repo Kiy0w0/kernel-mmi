@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #ifndef INJECTOR_H
 #define INJECTOR_H

@@ -1,32 +1,7 @@
-/*
- * Copyright 2018-2022 Justas Masiulis
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
 
- // === FAQ === documentation is available at https://github.com/JustasMasiulis/lazy_importer
- // * Code doesn't compile with errors about pointer conversion:
- //  - Try using `nullptr` instead of `NULL` or call `get()` instead of using the overloaded operator()
- // * Lazy importer can't find the function I want:
- //   - Double check that the module in which it's located in is actually loaded
- //   - Try #define LAZY_IMPORTER_CASE_INSENSITIVE
- //     This will start using case insensitive comparison globally
- //   - Try #define LAZY_IMPORTER_RESOLVE_FORWARDED_EXPORTS
- //     This will enable forwarded export resolution globally instead of needing explicit `forwarded()` calls
 
 #ifndef LAZY_IMPORTER_HPP
 #define LAZY_IMPORTER_HPP
-
 
 #define LI_FN(name) ::li::detail::lazy_function<LAZY_IMPORTER_KHASH(#name), decltype(&name)>()
 
@@ -56,7 +31,6 @@
 #else
 #define LAZY_IMPORTER_FORCEINLINE inline
 #endif
-
 
 #ifdef LAZY_IMPORTER_CASE_INSENSITIVE
 #define LAZY_IMPORTER_CASE_SENSITIVITY false
@@ -122,26 +96,26 @@ namespace li {
                 }
             };
 
-            struct IMAGE_DOS_HEADER { // DOS .EXE header
-                unsigned short e_magic; // Magic number
-                unsigned short e_cblp; // Bytes on last page of file
-                unsigned short e_cp; // Pages in file
-                unsigned short e_crlc; // Relocations
-                unsigned short e_cparhdr; // Size of header in paragraphs
-                unsigned short e_minalloc; // Minimum extra paragraphs needed
-                unsigned short e_maxalloc; // Maximum extra paragraphs needed
-                unsigned short e_ss; // Initial (relative) SS value
-                unsigned short e_sp; // Initial SP value
-                unsigned short e_csum; // Checksum
-                unsigned short e_ip; // Initial IP value
-                unsigned short e_cs; // Initial (relative) CS value
-                unsigned short e_lfarlc; // File address of relocation table
-                unsigned short e_ovno; // Overlay number
-                unsigned short e_res[4]; // Reserved words
-                unsigned short e_oemid; // OEM identifier (for e_oeminfo)
-                unsigned short e_oeminfo; // OEM information; e_oemid specific
-                unsigned short e_res2[10]; // Reserved words
-                long           e_lfanew; // File address of new exe header
+            struct IMAGE_DOS_HEADER {
+                unsigned short e_magic;
+                unsigned short e_cblp;
+                unsigned short e_cp;
+                unsigned short e_crlc;
+                unsigned short e_cparhdr;
+                unsigned short e_minalloc;
+                unsigned short e_maxalloc;
+                unsigned short e_ss;
+                unsigned short e_sp;
+                unsigned short e_csum;
+                unsigned short e_ip;
+                unsigned short e_cs;
+                unsigned short e_lfarlc;
+                unsigned short e_ovno;
+                unsigned short e_res[4];
+                unsigned short e_oemid;
+                unsigned short e_oeminfo;
+                unsigned short e_res2[10];
+                long           e_lfanew;
             };
 
             struct IMAGE_FILE_HEADER {
@@ -163,9 +137,9 @@ namespace li {
                 unsigned long  Base;
                 unsigned long  NumberOfFunctions;
                 unsigned long  NumberOfNames;
-                unsigned long  AddressOfFunctions; // RVA from base of image
-                unsigned long  AddressOfNames; // RVA from base of image
-                unsigned long  AddressOfNameOrdinals; // RVA from base of image
+                unsigned long  AddressOfFunctions;
+                unsigned long  AddressOfNames;
+                unsigned long  AddressOfNameOrdinals;
             };
 
             struct IMAGE_DATA_DIRECTORY {
@@ -250,16 +224,14 @@ namespace li {
 #endif
             };
 
-        } // namespace win
+        }
 
         struct forwarded_hashes {
             unsigned module_hash;
             unsigned function_hash;
         };
 
-        // 64 bit integer where 32 bits are used for the hash offset
-        // and remaining 32 bits are used for the hash computed using it
-        using offset_hash_pair = unsigned long long;
+using offset_hash_pair = unsigned long long;
 
         LAZY_IMPORTER_FORCEINLINE constexpr unsigned get_hash(offset_hash_pair pair) noexcept { return (pair & 0xFFFFFFFF); }
 
@@ -326,8 +298,7 @@ namespace li {
             return res;
         }
 
-        // some helper functions
-        LAZY_IMPORTER_FORCEINLINE const win::PEB_T* peb() noexcept
+LAZY_IMPORTER_FORCEINLINE const win::PEB_T* peb() noexcept
         {
 #if defined(_M_X64) || defined(__amd64__)
             return reinterpret_cast<const win::PEB_T*>(__readgsqword(0x60));
@@ -472,13 +443,11 @@ namespace li {
             }
         };
 
-        // provides the cached functions which use Derive classes methods
-        template<class Derived, class DefaultType = void*>
+template<class Derived, class DefaultType = void*>
         class lazy_base {
         protected:
-            // This function is needed because every templated function
-            // with different args has its own static buffer
-            LAZY_IMPORTER_FORCEINLINE static void*& _cache() noexcept
+
+LAZY_IMPORTER_FORCEINLINE static void*& _cache() noexcept
             {
                 static void* value = nullptr;
                 return value;
@@ -560,9 +529,7 @@ namespace li {
             template<class F = T, class Enum = unsafe_module_enumerator>
             LAZY_IMPORTER_FORCEINLINE static F get() noexcept
             {
-                // for backwards compatability.
-                // Before 2.0 it was only possible to resolve forwarded exports when
-                // this macro was enabled
+
 #ifdef LAZY_IMPORTER_RESOLVE_FORWARDED_EXPORTS
                 return forwarded<F, Enum>();
 #else
@@ -597,7 +564,7 @@ namespace li {
                 Enum e;
                 do {
                     name = e.value->BaseDllName;
-                    name.Length -= 8; // get rid of .dll extension
+                    name.Length -= 8;
 
                     if (!hashes.module_hash || hash(name, get_offset(OHP)) == hashes.module_hash) {
                         const exports_directory exports(e.value->DllBase);
@@ -712,6 +679,6 @@ namespace li {
         };
 
     }
-} // namespace li::detail
+}
 
-#endif // include guard
+#endif

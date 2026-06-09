@@ -1,22 +1,15 @@
-@echo off
+﻿@echo off
 setlocal enabledelayedexpansion
 
-:: ============================================================================
-:: nanahira — Quick Binary Re-Spoof
-:: Re-applies PE mutations without recompiling
-:: Instantly generates new SHA256 hashes
-:: Source: https://github.com/Kiy0w0/kernel-mmi
-:: ============================================================================
 
 title nanahira quick-spoof
 
 echo.
-echo  ══════════════════════════════════════════════
-echo   nanahira — Quick Binary Re-Spoof
-echo  ══════════════════════════════════════════════
+echo  â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+echo   nanahira â€” Quick Binary Re-Spoof
+echo  â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 echo.
 
-:: Check if output files exist
 if not exist "%~dp0output\driver.sys" (
     echo  [x] output\driver.sys not found
     echo  [x] Run build_release.bat first
@@ -31,16 +24,14 @@ if not exist "%~dp0output\nanahira.exe" (
     exit /b 1
 )
 
-:: Show current hashes
 echo  Current hashes:
-echo  ──────────────────────────────────────────────
+echo  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 certutil -hashfile "%~dp0output\driver.sys" SHA256 2>nul | findstr /v "hash certutil"
 echo   ^ driver.sys
 certutil -hashfile "%~dp0output\nanahira.exe" SHA256 2>nul | findstr /v "hash certutil"
 echo   ^ nanahira.exe
 echo.
 
-:: Check for PowerShell 7
 where pwsh >nul 2>&1
 if %errorLevel% neq 0 (
     echo  [!] PowerShell 7 (pwsh) not found, trying Windows PowerShell...
@@ -49,16 +40,15 @@ if %errorLevel% neq 0 (
     set "PWSH=pwsh"
 )
 
-:: Apply PE mutations
 echo  Applying 10 PE mutations...
-echo  ──────────────────────────────────────────────
+echo  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 %PWSH% -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\signature_randomizer.ps1" -Files "%~dp0output\driver.sys","%~dp0output\nanahira.exe"
 
 echo.
-echo  ══════════════════════════════════════════════
-echo   RE-SPOOF COMPLETE — New unique signatures
-echo  ══════════════════════════════════════════════
+echo  â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+echo   RE-SPOOF COMPLETE â€” New unique signatures
+echo  â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 echo.
 
 pause

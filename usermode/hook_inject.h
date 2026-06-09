@@ -1,9 +1,7 @@
 #pragma once
 
 #include <windows.h>
-#include <psapi.h>
-
-#pragma comment(lib, "psapi.lib")
+#include <tlhelp32.h>
 
 #ifndef _UNICODE_STRING_DEFINED
 #define _UNICODE_STRING_DEFINED
@@ -139,6 +137,10 @@ static void __stdcall HookShellcode()
     _DllMain(pBase, DLL_PROCESS_ATTACH, nullptr);
 }
 
+#pragma optimize("", off)
+#pragma runtime_checks("", off)
+static void HookShellcode_End() { __nop(); }
+#pragma runtime_checks("", restore)
 #pragma optimize("", on)
 #pragma runtime_checks("", restore)
 
@@ -156,18 +158,38 @@ static inline PBYTE ScanPattern(PVOID imageBase, SIZE_T imageSize, const char* p
     return nullptr;
 }
 
-static inline int ScFunctionLength(void* fn)
+static inline int ScFunctionLength(void* fn) {
+    return (int)((BYTE*)HookShellcode_End - (BYTE*)fn);
+}
+
+static inline void ApplySectionProtections(HANDLE hProc, BYTE* remoteBase, IMAGE_NT_HEADERS64* nt)
 {
-    int len = 0;
-    const int kMaxLen = 0x1000;
-    while (len < kMaxLen && *(UINT32*)((BYTE*)fn + len) != 0xCCCCCCCC) len++;
-    return len;
+    auto* secs = IMAGE_FIRST_SECTION(nt);
+    for (int i = 0; i < nt->FileHeader.NumberOfSections; i++) {
+        auto* s = secs + i;
+        DWORD chars   = s->Characteristics;
+        BOOL  isExec  = (chars & IMAGE_SCN_MEM_EXECUTE) != 0;
+        BOOL  isRead  = (chars & IMAGE_SCN_MEM_READ)    != 0;
+        BOOL  isWrite = (chars & IMAGE_SCN_MEM_WRITE)   != 0;
+
+        DWORD prot = PAGE_NOACCESS;
+        if      (isExec && isRead && isWrite) prot = PAGE_EXECUTE_READWRITE;
+        else if (isExec && isRead)            prot = PAGE_EXECUTE_READ;
+        else if (isExec)                      prot = PAGE_EXECUTE;
+        else if (isRead && isWrite)           prot = PAGE_READWRITE;
+        else if (isRead)                      prot = PAGE_READONLY;
+
+        SIZE_T secSize = s->Misc.VirtualSize ? s->Misc.VirtualSize : s->SizeOfRawData;
+        if (!secSize) continue;
+
+        DWORD old;
+        VirtualProtectEx(hProc, remoteBase + s->VirtualAddress, secSize, prot, &old);
+    }
 }
 
 struct HookInjector {
     static bool inject(DWORD pid, const wchar_t* dllPath)
     {
-
         DWORD threadId = 0;
         {
             HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
@@ -197,9 +219,6 @@ struct HookInjector {
                                                   MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (!remoteBase) { VirtualFree(fileData, 0, MEM_RELEASE); CloseHandle(hProc); return false; }
 
-        DWORD old;
-        VirtualProtectEx(hProc, remoteBase, nt->OptionalHeader.SizeOfImage, PAGE_EXECUTE_READWRITE, &old);
-
         WriteProcessMemory(hProc, remoteBase, fileData, nt->OptionalHeader.SizeOfHeaders, NULL);
         auto* sec = IMAGE_FIRST_SECTION(nt);
         for (int i = 0; i < nt->FileHeader.NumberOfSections; i++, sec++) {
@@ -207,26 +226,32 @@ struct HookInjector {
                 WriteProcessMemory(hProc, remoteBase + sec->VirtualAddress,
                                    fileData + sec->PointerToRawData, sec->SizeOfRawData, NULL);
         }
-        VirtualFree(fileData, 0, MEM_RELEASE);
 
-        BYTE* flagBase  = (BYTE*)VirtualAllocEx(hProc, NULL, sizeof(DWORD), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-        BYTE* scRemote  = (BYTE*)VirtualAllocEx(hProc, NULL, 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        BYTE* flagBase = (BYTE*)VirtualAllocEx(hProc, NULL, sizeof(DWORD), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        BYTE* scRemote = (BYTE*)VirtualAllocEx(hProc, NULL, 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 
-        MODULEINFO mi = {};
-        GetModuleInformation(GetCurrentProcess(), GetModuleHandleA(NULL), &mi, sizeof(mi));
+        if (!flagBase || !scRemote) {
+            if (flagBase) VirtualFreeEx(hProc, flagBase, 0, MEM_RELEASE);
+            if (scRemote) VirtualFreeEx(hProc, scRemote, 0, MEM_RELEASE);
+            VirtualFreeEx(hProc, remoteBase, 0, MEM_RELEASE);
+            VirtualFree(fileData, 0, MEM_RELEASE);
+            CloseHandle(hProc);
+            return false;
+        }
 
         int scLen = ScFunctionLength(&HookShellcode);
-        BYTE* scLocal = (BYTE*)VirtualAlloc(NULL, scLen, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+        BYTE* scLocal = (BYTE*)VirtualAlloc(NULL, scLen, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         memcpy(scLocal, &HookShellcode, scLen);
 
-        PBYTE pBase  = ScanPattern(scLocal, scLen, "\x68\x41\x25\x46\x58\x01\x00\x00", "xxxxxx??");
-
-        PBYTE pFlag  = ScanPattern(scLocal, scLen, "\x53\x12\x84\x56\x48\x02\x00\x00", "xxxxxx??");
+        PBYTE pBase = ScanPattern(scLocal, scLen, "\x68\x41\x25\x46\x58\x01\x00\x00", "xxxxxx??");
+        PBYTE pFlag = ScanPattern(scLocal, scLen, "\x53\x12\x84\x56\x48\x02\x00\x00", "xxxxxx??");
 
         if (!pBase || !pFlag) {
             VirtualFree(scLocal, 0, MEM_RELEASE);
             VirtualFreeEx(hProc, scRemote, 0, MEM_RELEASE);
             VirtualFreeEx(hProc, flagBase, 0, MEM_RELEASE);
+            VirtualFreeEx(hProc, remoteBase, 0, MEM_RELEASE);
+            VirtualFree(fileData, 0, MEM_RELEASE);
             CloseHandle(hProc);
             return false;
         }
@@ -236,6 +261,9 @@ struct HookInjector {
 
         WriteProcessMemory(hProc, scRemote, scLocal, scLen, NULL);
         VirtualFree(scLocal, 0, MEM_RELEASE);
+
+        DWORD old;
+        VirtualProtectEx(hProc, scRemote, 0x1000, PAGE_EXECUTE_READ, &old);
 
         HMODULE ntdll = LoadLibraryA("ntdll.dll");
         HWINEVENTHOOK hook = SetWinEventHook(
@@ -249,11 +277,13 @@ struct HookInjector {
         if (!hook) {
             VirtualFreeEx(hProc, scRemote, 0, MEM_RELEASE);
             VirtualFreeEx(hProc, flagBase, 0, MEM_RELEASE);
+            VirtualFreeEx(hProc, remoteBase, 0, MEM_RELEASE);
+            VirtualFree(fileData, 0, MEM_RELEASE);
             CloseHandle(hProc);
             return false;
         }
 
-        BYTE flag = 0;
+        BYTE  flag    = 0;
         DWORD timeout = 10000;
         while (flag != 0x69 && timeout > 0) {
             ReadProcessMemory(hProc, flagBase, &flag, 1, NULL);
@@ -262,10 +292,14 @@ struct HookInjector {
         }
 
         UnhookWinEvent(hook);
+
+        if (flag == 0x69)
+            ApplySectionProtections(hProc, remoteBase, nt);
+
         VirtualFreeEx(hProc, scRemote, 0, MEM_RELEASE);
         VirtualFreeEx(hProc, flagBase, 0, MEM_RELEASE);
+        VirtualFree(fileData, 0, MEM_RELEASE);
         CloseHandle(hProc);
         return (flag == 0x69);
     }
 };
-

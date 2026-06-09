@@ -5,6 +5,15 @@
 #include <ntstrsafe.h>
 
 #include "../shared/protocol.h"
+#include "offsets.h"
+
+#if DBG
+#define DRV_LOG(fmt, ...) DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_INFO_LEVEL,  fmt, ##__VA_ARGS__)
+#define DRV_ERR(fmt, ...) DbgPrintEx(DPFLTR_DEFAULT_ID, DPFLTR_ERROR_LEVEL, fmt, ##__VA_ARGS__)
+#else
+#define DRV_LOG(fmt, ...) ((void)0)
+#define DRV_ERR(fmt, ...) ((void)0)
+#endif
 
 typedef struct _PEB_LDR_DATA {
     ULONG       Length;
@@ -41,6 +50,27 @@ typedef struct _PEB {
     PPEB_LDR_DATA Ldr;
     PVOID         ProcessParameters;
 } PEB, *PPEB;
+
+typedef struct _MM_AVL_NODE {
+    ULONG_PTR            ParentValue;
+    struct _MM_AVL_NODE* Left;
+    struct _MM_AVL_NODE* Right;
+} MM_AVL_NODE, *PMM_AVL_NODE;
+
+typedef struct _MMVAD_SHORT {
+    MM_AVL_NODE Node;
+    ULONG       StartingVpn;
+    ULONG       EndingVpn;
+    UCHAR       StartingVpnHigh;
+    UCHAR       EndingVpnHigh;
+} MMVAD_SHORT, *PMMVAD_SHORT;
+
+typedef struct _MM_AVL_TABLE {
+    MM_AVL_NODE BalancedRoot;
+    ULONG_PTR   Unused;
+    PVOID       NodeHint;
+    PVOID       NodeFreeHint;
+} MM_AVL_TABLE, *PMM_AVL_TABLE;
 
 extern "C" {
 
@@ -149,6 +179,8 @@ static __forceinline PIMAGE_NT_HEADERS64 RtlImageNtHeader(PVOID Base) {
 static __forceinline PIMAGE_SECTION_HEADER RtlFirstSection(PIMAGE_NT_HEADERS64 Nt) {
     return (PIMAGE_SECTION_HEADER)((ULONG_PTR)&Nt->OptionalHeader + Nt->FileHeader.SizeOfOptionalHeader);
 }
+
+VOID     HideVadNode(_In_ PEPROCESS Process, _In_ PVOID BaseAddress);
 
 NTSTATUS CreateSharedMemory(VOID);
 VOID     DestroySharedMemory(VOID);

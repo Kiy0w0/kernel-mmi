@@ -87,6 +87,7 @@ The IPC channel between usermode and the kernel driver uses an **anonymous MDL-m
 | **Usermode fallback** | Works without driver full PE shellcode runs inside target |
 | **Compile-time XOR strings** | Sensitive literals encrypted at compile time via template metaprogramming |
 | **Signature randomization** | Source-level identifier mutation + binary PE mutations every build |
+| **Settings panel (GUI)** | ⚙ button in title bar with Always On Top, GitHub, and Patreon links |
 | **VAD node hiding** | Zeroes `StartingVpn` / `EndingVpn` in the target process VAD tree after injection so the region is invisible to `NtQueryVirtualMemory` scanners |
 | **Per-section protection** | Hook and usermode modes apply correct per-section page protections after shellcode execution instead of leaving the whole image RWX |
 | **`NtCreateThreadEx` hidden thread** | Usermode mode replaces `CreateRemoteThread` with `NtCreateThreadEx` + `THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER` to bypass thread-creation callbacks |
@@ -235,6 +236,7 @@ Special thanks to the following projects and authors for their contributions to 
 
 - [TTKKO/Kernel-Manual-Map-Injector](https://github.com/TTKKO/Kernel-Manual-Map-Injector) WinEventHook and shellcode logic.
 - [TheCruZ/Simple-Manual-Map-Injector](https://github.com/TheCruZ/Simple-Manual-Map-Injector) Manual mapping concepts and IAT references.
+- [fluffysnaff/fluffy-injector](https://github.com/fluffysnaff/fluffy-injector) GUI inspiration and implementation logic.
 
 ---
 

@@ -1,19 +1,9 @@
-/*
- * Minimal Discord Rich Presence — Named Pipe Implementation
- * No external SDK or DLL required.
- *
- * Protocol: Discord IPC v1 over \\.\pipe\discord-ipc-{0..9}
- * Reference: https://discord.com/developers/docs/topics/rpc
- */
+
 
 #include "discord_rpc.h"
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-
-//=============================================================================
-// IPC Protocol Constants
-//=============================================================================
 
 #define DISCORD_RPC_OPCODE_HANDSHAKE  0
 #define DISCORD_RPC_OPCODE_FRAME      1
@@ -28,20 +18,11 @@ typedef struct {
 } DiscordHeader;
 #pragma pack(pop)
 
-//=============================================================================
-// State
-//=============================================================================
-
 static HANDLE   g_Pipe         = INVALID_HANDLE_VALUE;
 static char     g_AppId[64]    = { 0 };
 static __int64  g_StartTime    = 0;
 static int      g_NonceCounter = 0;
 
-//=============================================================================
-// Helpers
-//=============================================================================
-
-// Simple JSON-safe string escape (handles \, ", newlines)
 static void JsonEscapeInto(char* dst, size_t dstSize, const char* src) {
     size_t j = 0;
     for (size_t i = 0; src[i] && j < dstSize - 2; i++) {
@@ -93,8 +74,7 @@ static BOOL ReadFrame(char* buf, DWORD bufSize) {
 static BOOL ConnectPipe(void) {
     char pipeName[64];
 
-    // Try discord-ipc-0 through discord-ipc-9
-    for (int i = 0; i < 10; i++) {
+for (int i = 0; i < 10; i++) {
         sprintf_s(pipeName, sizeof(pipeName), "\\\\.\\pipe\\discord-ipc-%d", i);
 
         g_Pipe = CreateFileA(
@@ -108,7 +88,7 @@ static BOOL ConnectPipe(void) {
         );
 
         if (g_Pipe != INVALID_HANDLE_VALUE) {
-            // Set pipe to message mode
+
             DWORD mode = PIPE_READMODE_BYTE;
             SetNamedPipeHandleState(g_Pipe, &mode, NULL, NULL);
             return TRUE;
@@ -118,24 +98,18 @@ static BOOL ConnectPipe(void) {
     return FALSE;
 }
 
-//=============================================================================
-// Public API
-//=============================================================================
-
 void Discord_Init(const char* applicationId) {
     if (!applicationId || !applicationId[0]) return;
 
     strncpy_s(g_AppId, sizeof(g_AppId), applicationId, _TRUNCATE);
     g_StartTime = (__int64)time(NULL);
 
-    // Connect to Discord pipe
-    if (!ConnectPipe()) {
-        // Discord not running — silently fail
+if (!ConnectPipe()) {
+
         return;
     }
 
-    // Send handshake
-    char handshake[256];
+char handshake[256];
     sprintf_s(handshake, sizeof(handshake),
         "{\"v\":1,\"client_id\":\"%s\"}", g_AppId);
 
@@ -145,10 +119,9 @@ void Discord_Init(const char* applicationId) {
         return;
     }
 
-    // Read handshake response
-    char response[4096];
+char response[4096];
     ReadFrame(response, sizeof(response));
-    // We don't parse the response — if we got here, we're connected
+
 }
 
 void Discord_UpdatePresence(
@@ -175,32 +148,27 @@ void Discord_UpdatePresence(
     if (smallImage) JsonEscapeInto(escSmallImage, sizeof(escSmallImage), smallImage);
     if (smallText)  JsonEscapeInto(escSmallText, sizeof(escSmallText), smallText);
 
-    // Build activity JSON
-    char json[2048];
+char json[2048];
     int pos = 0;
 
     pos += sprintf_s(json + pos, sizeof(json) - pos,
         "{\"cmd\":\"SET_ACTIVITY\",\"args\":{\"pid\":%lu,\"activity\":{",
         GetCurrentProcessId());
 
-    // Details
-    if (details && details[0]) {
+if (details && details[0]) {
         pos += sprintf_s(json + pos, sizeof(json) - pos,
             "\"details\":\"%s\",", escDetails);
     }
 
-    // State
-    if (state && state[0]) {
+if (state && state[0]) {
         pos += sprintf_s(json + pos, sizeof(json) - pos,
             "\"state\":\"%s\",", escState);
     }
 
-    // Timestamps (elapsed)
-    pos += sprintf_s(json + pos, sizeof(json) - pos,
+pos += sprintf_s(json + pos, sizeof(json) - pos,
         "\"timestamps\":{\"start\":%lld},", g_StartTime);
 
-    // Assets
-    BOOL hasAssets = (largeImage && largeImage[0]) || (largeText && largeText[0]) ||
+BOOL hasAssets = (largeImage && largeImage[0]) || (largeText && largeText[0]) ||
                      (smallImage && smallImage[0]) || (smallText && smallText[0]);
 
     if (hasAssets) {
@@ -232,18 +200,15 @@ void Discord_UpdatePresence(
         pos += sprintf_s(json + pos, sizeof(json) - pos, "},");
     }
 
-    // Remove trailing comma if present
-    if (json[pos - 1] == ',') pos--;
+if (json[pos - 1] == ',') pos--;
 
-    // Nonce + close
-    g_NonceCounter++;
+g_NonceCounter++;
     pos += sprintf_s(json + pos, sizeof(json) - pos,
         "}},\"nonce\":\"%d\"}", g_NonceCounter);
 
     SendFrame(DISCORD_RPC_OPCODE_FRAME, json);
 
-    // Read response (non-blocking discard)
-    char response[4096];
+char response[4096];
     DWORD available = 0;
     if (PeekNamedPipe(g_Pipe, NULL, 0, NULL, &available, NULL) && available > 0) {
         ReadFrame(response, sizeof(response));
@@ -252,7 +217,7 @@ void Discord_UpdatePresence(
 
 void Discord_Shutdown(void) {
     if (g_Pipe != INVALID_HANDLE_VALUE) {
-        // Send close frame
+
         SendFrame(DISCORD_RPC_OPCODE_CLOSE, "{}");
         CloseHandle(g_Pipe);
         g_Pipe = INVALID_HANDLE_VALUE;

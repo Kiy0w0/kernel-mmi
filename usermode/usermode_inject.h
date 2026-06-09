@@ -80,12 +80,61 @@ static void __stdcall UserModeShellcode(UserModeMapParams* p)
     *(volatile BYTE*)p->flag_addr = 0x69;
 }
 
+#pragma optimize("", off)
+#pragma runtime_checks("", off)
+static void UserModeShellcode_End() { __nop(); }
+#pragma runtime_checks("", restore)
 #pragma optimize("", on)
 #pragma runtime_checks("", restore)
+
+typedef LONG (NTAPI* fn_NtCreateThreadEx)(
+    PHANDLE            ThreadHandle,
+    ACCESS_MASK        DesiredAccess,
+    PVOID              ObjectAttributes,
+    HANDLE             ProcessHandle,
+    PVOID              StartRoutine,
+    PVOID              Argument,
+    ULONG              CreateFlags,
+    SIZE_T             ZeroBits,
+    SIZE_T             StackSize,
+    SIZE_T             MaximumStackSize,
+    PVOID              AttributeList
+);
+
+#define THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER 0x4
+
+static inline void ApplyUmSectionProtections(HANDLE hProc, BYTE* remoteBase, IMAGE_NT_HEADERS64* nt)
+{
+    auto* secs = IMAGE_FIRST_SECTION(nt);
+    for (int i = 0; i < nt->FileHeader.NumberOfSections; i++) {
+        auto* s = secs + i;
+        DWORD chars   = s->Characteristics;
+        BOOL  isExec  = (chars & IMAGE_SCN_MEM_EXECUTE) != 0;
+        BOOL  isRead  = (chars & IMAGE_SCN_MEM_READ)    != 0;
+        BOOL  isWrite = (chars & IMAGE_SCN_MEM_WRITE)   != 0;
+
+        DWORD prot = PAGE_NOACCESS;
+        if      (isExec && isRead && isWrite) prot = PAGE_EXECUTE_READWRITE;
+        else if (isExec && isRead)            prot = PAGE_EXECUTE_READ;
+        else if (isExec)                      prot = PAGE_EXECUTE;
+        else if (isRead && isWrite)           prot = PAGE_READWRITE;
+        else if (isRead)                      prot = PAGE_READONLY;
+
+        SIZE_T secSize = s->Misc.VirtualSize ? s->Misc.VirtualSize : s->SizeOfRawData;
+        if (!secSize) continue;
+
+        DWORD old;
+        VirtualProtectEx(hProc, remoteBase + s->VirtualAddress, secSize, prot, &old);
+    }
+}
 
 struct UmInjector {
     static bool inject(DWORD pid, const wchar_t* dllPath)
     {
+        fn_NtCreateThreadEx NtCreateThreadEx = (fn_NtCreateThreadEx)GetProcAddress(
+            GetModuleHandleA("ntdll.dll"), "NtCreateThreadEx");
+        if (!NtCreateThreadEx) return false;
+
         HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
         if (!hProc) return false;
 
@@ -103,7 +152,11 @@ struct UmInjector {
 
         BYTE* remoteBase = (BYTE*)VirtualAllocEx(hProc, NULL, nt->OptionalHeader.SizeOfImage,
                                                   MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-        if (!remoteBase) { VirtualFree(fileData, 0, MEM_RELEASE); CloseHandle(hProc); return false; }
+        if (!remoteBase) {
+            VirtualFree(fileData, 0, MEM_RELEASE);
+            CloseHandle(hProc);
+            return false;
+        }
 
         WriteProcessMemory(hProc, remoteBase, fileData, nt->OptionalHeader.SizeOfHeaders, NULL);
 
@@ -113,16 +166,16 @@ struct UmInjector {
                 WriteProcessMemory(hProc, remoteBase + sec->VirtualAddress,
                                    fileData + sec->PointerToRawData, sec->SizeOfRawData, NULL);
         }
-        VirtualFree(fileData, 0, MEM_RELEASE);
 
         SIZE_T scSize  = 0x2000;
-        BYTE* scBase   = (BYTE*)VirtualAllocEx(hProc, NULL, scSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-        BYTE* flagBase = (BYTE*)VirtualAllocEx(hProc, NULL, sizeof(BYTE), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        BYTE*  scBase  = (BYTE*)VirtualAllocEx(hProc, NULL, scSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        BYTE*  flagBase = (BYTE*)VirtualAllocEx(hProc, NULL, sizeof(BYTE), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 
         if (!scBase || !flagBase) {
-            if (scBase)   VirtualFreeEx(hProc, scBase,    0, MEM_RELEASE);
-            if (flagBase) VirtualFreeEx(hProc, flagBase,  0, MEM_RELEASE);
+            if (scBase)   VirtualFreeEx(hProc, scBase,   0, MEM_RELEASE);
+            if (flagBase) VirtualFreeEx(hProc, flagBase, 0, MEM_RELEASE);
             VirtualFreeEx(hProc, remoteBase, 0, MEM_RELEASE);
+            VirtualFree(fileData, 0, MEM_RELEASE);
             CloseHandle(hProc);
             return false;
         }
@@ -135,17 +188,35 @@ struct UmInjector {
             (uintptr_t)GetProcAddress(GetModuleHandleA("ntdll.dll"),    "RtlAddFunctionTable")
         };
 
-        WriteProcessMemory(hProc, scBase, &params, sizeof(params), NULL);
-        WriteProcessMemory(hProc, scBase + sizeof(params), (BYTE*)&UserModeShellcode,
-                           scSize - sizeof(params), NULL);
-
-        HANDLE hThread = CreateRemoteThread(hProc, NULL, 0,
-            (LPTHREAD_START_ROUTINE)(scBase + sizeof(params)), scBase, 0, NULL);
-
-        if (!hThread) {
+        SIZE_T scFnSize = (SIZE_T)((BYTE*)UserModeShellcode_End - (BYTE*)UserModeShellcode);
+        if (sizeof(params) + scFnSize > scSize) {
             VirtualFreeEx(hProc, scBase,    0, MEM_RELEASE);
             VirtualFreeEx(hProc, flagBase,  0, MEM_RELEASE);
             VirtualFreeEx(hProc, remoteBase, 0, MEM_RELEASE);
+            VirtualFree(fileData, 0, MEM_RELEASE);
+            CloseHandle(hProc);
+            return false;
+        }
+
+        WriteProcessMemory(hProc, scBase, &params, sizeof(params), NULL);
+        WriteProcessMemory(hProc, scBase + sizeof(params), (BYTE*)UserModeShellcode, scFnSize, NULL);
+
+        DWORD old;
+        VirtualProtectEx(hProc, scBase, scSize, PAGE_EXECUTE_READ, &old);
+
+        HANDLE hThread = NULL;
+        LONG st = NtCreateThreadEx(
+            &hThread, GENERIC_ALL, NULL, hProc,
+            (PVOID)(scBase + sizeof(params)), scBase,
+            THREAD_CREATE_FLAGS_HIDE_FROM_DEBUGGER,
+            0, 0, 0, NULL
+        );
+
+        if (st < 0 || !hThread) {
+            VirtualFreeEx(hProc, scBase,    0, MEM_RELEASE);
+            VirtualFreeEx(hProc, flagBase,  0, MEM_RELEASE);
+            VirtualFreeEx(hProc, remoteBase, 0, MEM_RELEASE);
+            VirtualFree(fileData, 0, MEM_RELEASE);
             CloseHandle(hProc);
             return false;
         }
@@ -161,8 +232,12 @@ struct UmInjector {
         WaitForSingleObject(hThread, 3000);
         CloseHandle(hThread);
 
+        if (flag == 0x69)
+            ApplyUmSectionProtections(hProc, remoteBase, nt);
+
         VirtualFreeEx(hProc, scBase,   0, MEM_RELEASE);
         VirtualFreeEx(hProc, flagBase, 0, MEM_RELEASE);
+        VirtualFree(fileData, 0, MEM_RELEASE);
         CloseHandle(hProc);
         return (flag == 0x69);
     }

@@ -1,34 +1,21 @@
-@echo off
+﻿@echo off
 setlocal enabledelayedexpansion
 
-:: ============================================================================
-:: nanahira — Full Build Pipeline (5 Steps)
-:: 
-::   1. Source mutation (randomize identifiers)
-::   2. Compile driver.sys
-::   3. Compile nanahira.exe
-::   4. Restore source to original
-::   5. Binary PE mutation (10 mutations)
-::
-:: Every run produces completely unique binaries.
-:: Source: https://github.com/Kiy0w0/kernel-mmi
-:: ============================================================================
 
 title nanahira build
 
 echo.
-echo  ╔══════════════════════════════════════════════════════════╗
-echo  ║                                                          ║
-echo  ║   ███╗   ██╗ █████╗ ███╗   ██╗ █████╗ ██╗  ██╗██╗██████╗  █████╗   ║
-echo  ║   ██╔██╗ ██║███████║██╔██╗ ██║███████║███████║██║██████╔╝███████║  ║
-echo  ║   ██║ ╚████║██║  ██║██║ ╚████║██║  ██║██║  ██║██║██║  ██║██║  ██║  ║
-echo  ║   ╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝╚═╝  ╚═╝╚═╝  ╚═╝  ║
-echo  ║                                                          ║
-echo  ║   Release Build Pipeline                                 ║
-echo  ╚══════════════════════════════════════════════════════════╝
+echo  â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—
+echo  â•‘                                                          â•‘
+echo  â•‘   â–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ•—   â–ˆâ–ˆâ•— â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•— â–ˆâ–ˆâ•—  â–ˆâ–ˆâ•—â–ˆâ–ˆâ•—â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—  â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•—   â•‘
+echo  â•‘   â–ˆâ–ˆâ•”â–ˆâ–ˆâ•— â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ•”â–ˆâ–ˆâ•— â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•”â•â–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ–ˆâ•‘  â•‘
+echo  â•‘   â–ˆâ–ˆâ•‘ â•šâ–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘ â•šâ–ˆâ–ˆâ–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘â–ˆâ–ˆâ•‘  â–ˆâ–ˆâ•‘  â•‘
+echo  â•‘   â•šâ•â•  â•šâ•â•â•â•â•šâ•â•  â•šâ•â•â•šâ•â•  â•šâ•â•â•â•â•šâ•â•  â•šâ•â•â•šâ•â•  â•šâ•â•â•šâ•â•â•šâ•â•  â•šâ•â•â•šâ•â•  â•šâ•â•  â•‘
+echo  â•‘                                                          â•‘
+echo  â•‘   Release Build Pipeline                                 â•‘
+echo  â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 echo.
 
-:: ── Check admin ──
 net session >nul 2>&1
 if %errorLevel% neq 0 (
     echo  [x] Administrator privileges required.
@@ -38,7 +25,6 @@ if %errorLevel% neq 0 (
 )
 echo  [+] Running as Administrator
 
-:: ── Find VS2022 ──
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 if not exist "%VSWHERE%" (
     echo  [x] Visual Studio 2022 not found!
@@ -57,7 +43,6 @@ if not defined VSINSTALL (
 
 echo  [+] VS2022: %VSINSTALL%
 
-:: ── Load build environment ──
 call "%VSINSTALL%\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
 if %errorLevel% neq 0 (
     echo  [x] Failed to load vcvars64.bat
@@ -66,10 +51,9 @@ if %errorLevel% neq 0 (
 )
 echo  [+] Build environment loaded
 
-:: ── Check PowerShell ──
 where pwsh >nul 2>&1
 if %errorLevel% neq 0 (
-    echo  [!] PowerShell 7 (pwsh) not found — source mutation will be skipped
+    echo  [!] PowerShell 7 (pwsh) not found â€” source mutation will be skipped
     echo  [!] Install: winget install Microsoft.PowerShell
     set "HAS_PWSH=0"
 ) else (
@@ -77,42 +61,34 @@ if %errorLevel% neq 0 (
     echo  [+] PowerShell 7 found
 )
 
-:: Create directories
 if not exist output mkdir output
 if not exist build mkdir build
 
 echo.
-echo  ══════════════════════════════════════════════════════════
+echo  â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-:: ══════════════════════════════════════════════════════════════
-:: Step 1/5 — Source Mutation
-:: ══════════════════════════════════════════════════════════════
 echo.
 echo  [1/5] Source-level mutation...
-echo  ──────────────────────────────────────────────
+echo  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 if "%HAS_PWSH%"=="1" (
     pwsh -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\source_randomizer.ps1" -Action mutate
     if !errorLevel! neq 0 (
-        echo  [!] Source mutation failed — building with original values
+        echo  [!] Source mutation failed â€” building with original values
     )
 ) else (
-    echo  [!] Skipped — requires PowerShell 7
+    echo  [!] Skipped â€” requires PowerShell 7
 )
 
-:: ══════════════════════════════════════════════════════════════
-:: Step 2/5 — Compile driver.sys
-:: ══════════════════════════════════════════════════════════════
 echo.
 echo  [2/5] Compiling driver.sys (kernel mode)...
-echo  ──────────────────────────────────────────────
+echo  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 msbuild "%~dp0nanahira.sln" /t:driver /p:Configuration=Release /p:Platform=x64 /v:minimal /nologo
 
 if %errorLevel% neq 0 (
     echo.
     echo  [x] Driver compilation FAILED
-    :: Restore source before exiting
     if "%HAS_PWSH%"=="1" (
         pwsh -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\source_randomizer.ps1" -Action restore
     )
@@ -121,7 +97,7 @@ if %errorLevel% neq 0 (
 )
 
 if exist "%~dp0output\driver.sys" (
-    for %%f in ("%~dp0output\driver.sys") do echo  [+] driver.sys — %%~zf bytes
+    for %%f in ("%~dp0output\driver.sys") do echo  [+] driver.sys â€” %%~zf bytes
 ) else (
     echo  [x] driver.sys not found in output/
     if "%HAS_PWSH%"=="1" (
@@ -131,12 +107,9 @@ if exist "%~dp0output\driver.sys" (
     exit /b 1
 )
 
-:: ══════════════════════════════════════════════════════════════
-:: Step 3/5 — Compile nanahira.exe
-:: ══════════════════════════════════════════════════════════════
 echo.
 echo  [3/5] Compiling nanahira.exe (usermode)...
-echo  ──────────────────────────────────────────────
+echo  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 msbuild "%~dp0nanahira.sln" /t:usermode /p:Configuration=Release /p:Platform=x64 /v:minimal /nologo
 
@@ -151,7 +124,7 @@ if %errorLevel% neq 0 (
 )
 
 if exist "%~dp0output\nanahira.exe" (
-    for %%f in ("%~dp0output\nanahira.exe") do echo  [+] nanahira.exe — %%~zf bytes
+    for %%f in ("%~dp0output\nanahira.exe") do echo  [+] nanahira.exe â€” %%~zf bytes
 ) else (
     echo  [x] nanahira.exe not found in output/
     if "%HAS_PWSH%"=="1" (
@@ -161,50 +134,41 @@ if exist "%~dp0output\nanahira.exe" (
     exit /b 1
 )
 
-:: ══════════════════════════════════════════════════════════════
-:: Step 4/5 — Restore Source
-:: ══════════════════════════════════════════════════════════════
 echo.
 echo  [4/5] Restoring source to original...
-echo  ──────────────────────────────────────────────
+echo  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 if "%HAS_PWSH%"=="1" (
     pwsh -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\source_randomizer.ps1" -Action restore
 ) else (
-    echo  [!] Skipped — no mutation was applied
+    echo  [!] Skipped â€” no mutation was applied
 )
 
-:: ══════════════════════════════════════════════════════════════
-:: Step 5/5 — Binary PE Mutation
-:: ══════════════════════════════════════════════════════════════
 echo.
 echo  [5/5] Binary PE mutation (10 mutations)...
-echo  ──────────────────────────────────────────────
+echo  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 if "%HAS_PWSH%"=="1" (
     pwsh -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\signature_randomizer.ps1" -Files "%~dp0output\driver.sys","%~dp0output\nanahira.exe"
 ) else (
-    echo  [!] Skipped — requires PowerShell 7
+    echo  [!] Skipped â€” requires PowerShell 7
 )
 
-:: ══════════════════════════════════════════════════════════════
-:: Summary
-:: ══════════════════════════════════════════════════════════════
 echo.
-echo  ╔══════════════════════════════════════════════════════════╗
-echo  ║                                                          ║
-echo  ║   BUILD COMPLETE                                         ║
-echo  ║                                                          ║
-echo  ╚══════════════════════════════════════════════════════════╝
+echo  â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—
+echo  â•‘                                                          â•‘
+echo  â•‘   BUILD COMPLETE                                         â•‘
+echo  â•‘                                                          â•‘
+echo  â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 echo.
 
 echo  Output:
-for %%f in ("%~dp0output\driver.sys") do echo    driver.sys    — %%~zf bytes
-for %%f in ("%~dp0output\nanahira.exe") do echo    nanahira.exe  — %%~zf bytes
+for %%f in ("%~dp0output\driver.sys") do echo    driver.sys    â€” %%~zf bytes
+for %%f in ("%~dp0output\nanahira.exe") do echo    nanahira.exe  â€” %%~zf bytes
 
 echo.
 echo  SHA256 Hashes (unique per build):
-echo  ──────────────────────────────────────────────
+echo  â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 certutil -hashfile "%~dp0output\driver.sys" SHA256 2>nul | findstr /v "hash certutil"
 echo    ^ driver.sys
 certutil -hashfile "%~dp0output\nanahira.exe" SHA256 2>nul | findstr /v "hash certutil"
